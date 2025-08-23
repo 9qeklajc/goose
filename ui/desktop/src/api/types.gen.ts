@@ -59,7 +59,9 @@ export type ConfigKeyQuery = {
 };
 
 export type ConfigResponse = {
-    config: {};
+    config: {
+        [key: string]: unknown;
+    };
 };
 
 export type Content = RawTextContent | RawImageContent | RawEmbeddedResource | Annotated;
@@ -94,6 +96,15 @@ export type ContextManageResponse = {
      * Token counts for each processed message
      */
     tokenCounts: Array<number>;
+};
+
+export type CreateCustomProviderRequest = {
+    api_key: string;
+    api_url: string;
+    display_name: string;
+    models: Array<string>;
+    provider_type: string;
+    supports_streaming?: boolean | null;
 };
 
 export type CreateRecipeRequest = {
@@ -159,6 +170,7 @@ export type ExtendPromptResponse = {
  * Represents the different types of MCP extensions that can be added to the manager
  */
 export type ExtensionConfig = {
+    available_tools?: Array<string>;
     /**
      * Whether this extension is bundled with Goose
      */
@@ -175,6 +187,7 @@ export type ExtensionConfig = {
     uri: string;
 } | {
     args: Array<string>;
+    available_tools?: Array<string>;
     /**
      * Whether this extension is bundled with Goose
      */
@@ -190,6 +203,7 @@ export type ExtensionConfig = {
     timeout?: number | null;
     type: 'stdio';
 } | {
+    available_tools?: Array<string>;
     /**
      * Whether this extension is bundled with Goose
      */
@@ -203,6 +217,7 @@ export type ExtensionConfig = {
     timeout?: number | null;
     type: 'builtin';
 } | {
+    available_tools?: Array<string>;
     /**
      * Whether this extension is bundled with Goose
      */
@@ -221,6 +236,7 @@ export type ExtensionConfig = {
     type: 'streamable_http';
     uri: string;
 } | {
+    available_tools?: Array<string>;
     /**
      * Whether this extension is bundled with Goose
      */
@@ -239,6 +255,7 @@ export type ExtensionConfig = {
     tools: Array<Tool>;
     type: 'frontend';
 } | {
+    available_tools?: Array<string>;
     /**
      * The Python code to execute
      */
@@ -580,6 +597,14 @@ export type RunNowResponse = {
     session_id: string;
 };
 
+export type ScanRecipeRequest = {
+    recipe: Recipe;
+};
+
+export type ScanRecipeResponse = {
+    has_security_warnings: boolean;
+};
+
 export type ScheduledJob = {
     cron: string;
     current_session_id?: string | null;
@@ -673,6 +698,10 @@ export type SessionMetadata = {
      * ID of the schedule that triggered this session, if any
      */
     schedule_id?: string | null;
+    /**
+     * Session-scoped TODO list content
+     */
+    todo_content?: string | null;
     /**
      * The total number of tokens used in the session. Retrieved from the provider's last usage.
      */
@@ -1030,6 +1059,62 @@ export type BackupConfigResponses = {
 };
 
 export type BackupConfigResponse = BackupConfigResponses[keyof BackupConfigResponses];
+
+export type CreateCustomProviderData = {
+    body: CreateCustomProviderRequest;
+    path?: never;
+    query?: never;
+    url: '/config/custom-providers';
+};
+
+export type CreateCustomProviderErrors = {
+    /**
+     * Invalid request
+     */
+    400: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type CreateCustomProviderResponses = {
+    /**
+     * Custom provider created successfully
+     */
+    200: string;
+};
+
+export type CreateCustomProviderResponse = CreateCustomProviderResponses[keyof CreateCustomProviderResponses];
+
+export type RemoveCustomProviderData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/config/custom-providers/{id}';
+};
+
+export type RemoveCustomProviderErrors = {
+    /**
+     * Provider not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type RemoveCustomProviderResponses = {
+    /**
+     * Custom provider removed successfully
+     */
+    200: string;
+};
+
+export type RemoveCustomProviderResponse = RemoveCustomProviderResponses[keyof RemoveCustomProviderResponses];
 
 export type GetExtensionsData = {
     body?: never;
@@ -1425,6 +1510,22 @@ export type EncodeRecipeResponses = {
 };
 
 export type EncodeRecipeResponse2 = EncodeRecipeResponses[keyof EncodeRecipeResponses];
+
+export type ScanRecipeData = {
+    body: ScanRecipeRequest;
+    path?: never;
+    query?: never;
+    url: '/recipes/scan';
+};
+
+export type ScanRecipeResponses = {
+    /**
+     * Recipe scanned successfully
+     */
+    200: ScanRecipeResponse;
+};
+
+export type ScanRecipeResponse2 = ScanRecipeResponses[keyof ScanRecipeResponses];
 
 export type CreateScheduleData = {
     body: CreateScheduleRequest;

@@ -30,13 +30,13 @@ interface ProgressiveMessageListProps {
   append?: (value: string) => void; // Make optional
   appendMessage?: (message: Message) => void; // Make optional
   isUserMessage: (message: Message) => boolean;
-  onScrollToBottom?: () => void;
   batchSize?: number;
   batchDelay?: number;
   showLoadingThreshold?: number; // Only show loading if more than X messages
   // Custom render function for messages
   renderMessage?: (message: Message, index: number) => React.ReactNode | null;
   isStreamingMessage?: boolean; // Whether messages are currently being streamed
+  onMessageUpdate?: (messageId: string, newContent: string) => void;
 }
 
 export default function ProgressiveMessageList({
@@ -46,12 +46,12 @@ export default function ProgressiveMessageList({
   append = () => {},
   appendMessage = () => {},
   isUserMessage,
-  onScrollToBottom,
   batchSize = 20,
   batchDelay = 20,
   showLoadingThreshold = 50,
   renderMessage, // Custom render function
   isStreamingMessage = false, // Whether messages are currently being streamed
+  onMessageUpdate,
 }: ProgressiveMessageListProps) {
   const [renderedCount, setRenderedCount] = useState(() => {
     // Initialize with either all messages (if small) or first batch (if large)
@@ -75,7 +75,7 @@ export default function ProgressiveMessageList({
     const contextManager = useChatContextManager();
     hasContextHandlerContent = contextManager.hasContextHandlerContent;
     getContextHandlerType = contextManager.getContextHandlerType;
-  } catch (error) {
+  } catch {
     // Context manager not available (e.g., in session history view)
     // This is fine, we'll just skip context handler functionality
     hasContextHandlerContent = undefined;
@@ -97,10 +97,6 @@ export default function ProgressiveMessageList({
 
         if (nextCount >= messages.length) {
           setIsLoading(false);
-          // Trigger scroll to bottom
-          window.setTimeout(() => {
-            onScrollToBottom?.();
-          }, 100);
         } else {
           // Schedule next batch
           timeoutRef.current = window.setTimeout(loadNextBatch, batchDelay);
@@ -119,14 +115,7 @@ export default function ProgressiveMessageList({
         timeoutRef.current = null;
       }
     };
-  }, [
-    messages.length,
-    batchSize,
-    batchDelay,
-    showLoadingThreshold,
-    onScrollToBottom,
-    renderedCount,
-  ]);
+  }, [messages.length, batchSize, batchDelay, showLoadingThreshold, renderedCount]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -201,12 +190,11 @@ export default function ProgressiveMessageList({
                     chatId={chat.id}
                     workingDir={window.appConfig.get('GOOSE_WORKING_DIR') as string}
                     contextType={getContextHandlerType!(message)}
-                    onSummaryComplete={() => {
-                      window.setTimeout(() => onScrollToBottom?.(), 100);
-                    }}
                   />
                 ) : (
-                  !hasOnlyToolResponses(message) && <UserMessage message={message} />
+                  !hasOnlyToolResponses(message) && (
+                    <UserMessage message={message} onMessageUpdate={onMessageUpdate} />
+                  )
                 )}
               </>
             ) : (
@@ -218,9 +206,6 @@ export default function ProgressiveMessageList({
                     chatId={chat.id}
                     workingDir={window.appConfig.get('GOOSE_WORKING_DIR') as string}
                     contextType={getContextHandlerType!(message)}
-                    onSummaryComplete={() => {
-                      window.setTimeout(() => onScrollToBottom?.(), 100);
-                    }}
                   />
                 ) : (
                   <GooseMessage
@@ -258,9 +243,9 @@ export default function ProgressiveMessageList({
     appendMessage,
     toolCallNotifications,
     isStreamingMessage,
+    onMessageUpdate,
     hasContextHandlerContent,
     getContextHandlerType,
-    onScrollToBottom,
   ]);
 
   return (

@@ -42,7 +42,7 @@
  * while remaining flexible enough to support different UI contexts (Hub vs Pair).
  */
 
-import React, { useEffect, useContext, createContext, useRef, useCallback } from 'react';
+import React, { useEffect, useContext, createContext, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { SearchView } from './conversation/SearchView';
 import { AgentHeader } from './AgentHeader';
@@ -56,7 +56,7 @@ import {
   ChatContextManagerProvider,
   useChatContextManager,
 } from './context_management/ChatContextManager';
-import { type View, ViewOptions } from '../App';
+import { View, ViewOptions } from '../utils/navigationUtils';
 import { MainPanelLayout } from './Layout/MainPanelLayout';
 import ChatInput from './ChatInput';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
@@ -93,6 +93,7 @@ interface BaseChatProps {
   disableSearch?: boolean; // Disable search functionality (for Hub)
   showPopularTopics?: boolean; // Show popular chat topics in empty state (for Pair)
   suppressEmptyState?: boolean; // Suppress empty state content (for transitions)
+  autoSubmit?: boolean;
 }
 
 function BaseChatContent({
@@ -112,6 +113,7 @@ function BaseChatContent({
   disableSearch = false,
   showPopularTopics = false,
   suppressEmptyState = false,
+  autoSubmit = false,
 }: BaseChatProps) {
   const location = useLocation();
   const scrollRef = useRef<ScrollAreaHandle>(null);
@@ -158,17 +160,11 @@ function BaseChatContent({
     sessionMetadata,
     isUserMessage,
     clearError,
+    onMessageUpdate,
   } = useChatEngine({
     chat,
     setChat,
     onMessageStreamFinish: () => {
-      // Auto-scroll to bottom when message stream finishes
-      setTimeout(() => {
-        if (scrollRef.current?.scrollToBottom) {
-          scrollRef.current.scrollToBottom();
-        }
-      }, 300);
-
       // Call the original callback if provided
       onMessageStreamFinish?.();
     },
@@ -199,6 +195,7 @@ function BaseChatContent({
     recipeAccepted,
     handleRecipeAccept,
     handleRecipeCancel,
+    hasSecurityWarnings,
   } = useRecipeManager(messages, location.state);
 
   // Reset recipe usage tracking when recipe changes
@@ -301,11 +298,6 @@ function BaseChatContent({
           scrollRef.current.scrollToBottom();
         }
       }, 200);
-    } else {
-      // Immediate scroll for regular submit
-      if (scrollRef.current?.scrollToBottom) {
-        scrollRef.current.scrollToBottom();
-      }
     }
   };
 
@@ -317,17 +309,20 @@ function BaseChatContent({
     }
     append(text);
   };
-  // Callback to handle scroll to bottom from ProgressiveMessageList
-  const handleScrollToBottom = useCallback(() => {
-    // Only auto-scroll if user is not actively typing
-    const isUserTyping = document.activeElement?.id === 'dynamic-textarea';
-    if (!isUserTyping) {
+
+  // Listen for global scroll-to-bottom requests (e.g., from MCP UI prompt actions)
+  useEffect(() => {
+    const handleGlobalScrollRequest = () => {
+      // Add a small delay to ensure content has been rendered
       setTimeout(() => {
         if (scrollRef.current?.scrollToBottom) {
           scrollRef.current.scrollToBottom();
         }
-      }, 100);
-    }
+      }, 200);
+    };
+
+    window.addEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
+    return () => window.removeEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
   }, []);
 
   return (
@@ -416,8 +411,8 @@ function BaseChatContent({
                         setMessages(updatedMessages);
                       }}
                       isUserMessage={isUserMessage}
-                      onScrollToBottom={handleScrollToBottom}
                       isStreamingMessage={chatState !== ChatState.Idle}
+                      onMessageUpdate={onMessageUpdate}
                     />
                   ) : (
                     // Render messages with SearchView wrapper when search is enabled
@@ -432,8 +427,8 @@ function BaseChatContent({
                           setMessages(updatedMessages);
                         }}
                         isUserMessage={isUserMessage}
-                        onScrollToBottom={handleScrollToBottom}
                         isStreamingMessage={chatState !== ChatState.Idle}
+                        onMessageUpdate={onMessageUpdate}
                       />
                     </SearchView>
                   )}
@@ -545,6 +540,7 @@ function BaseChatContent({
             recipeConfig={recipeConfig}
             recipeAccepted={recipeAccepted}
             initialPrompt={initialPrompt}
+            autoSubmit={autoSubmit}
             {...customChatInputProps}
           />
         </div>
@@ -570,6 +566,7 @@ function BaseChatContent({
           description: recipeConfig?.description,
           instructions: recipeConfig?.instructions || undefined,
         }}
+        hasSecurityWarnings={hasSecurityWarnings}
       />
 
       {/* Recipe Parameter Modal */}

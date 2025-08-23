@@ -221,8 +221,9 @@ mod tests {
             self.model_config.clone()
         }
 
-        async fn complete(
+        async fn complete_with_model(
             &self,
+            _model_config: &ModelConfig,
             _system: &str,
             _messages: &[Message],
             _tools: &[Tool],
@@ -268,6 +269,7 @@ mod tests {
             accumulated_total_tokens: Some(100),
             accumulated_input_tokens: Some(50),
             accumulated_output_tokens: Some(50),
+            todo_content: None,
         }
     }
 
