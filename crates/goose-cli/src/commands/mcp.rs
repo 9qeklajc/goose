@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use goose_mcp::{
-    ComputerControllerRouter, DeveloperRouter, MemoryRouter, NostrMcpRouter, TutorialRouter,
+    AutoVisualiserRouter, ComputerControllerRouter, DeveloperRouter, MemoryRouter, TutorialRouter, NostrMcpRouter,
 };
 use mcp_server::router::RouterService;
 use mcp_server::{BoundedService, ByteTransport, Server};
@@ -30,6 +30,7 @@ pub async fn run_server(name: &str) -> Result<()> {
     let router: Option<Box<dyn BoundedService>> = match name {
         "developer" => Some(Box::new(RouterService(DeveloperRouter::new()))),
         "computercontroller" => Some(Box::new(RouterService(ComputerControllerRouter::new()))),
+        "autovisualiser" => Some(Box::new(RouterService(AutoVisualiserRouter::new()))),
         "memory" => Some(Box::new(RouterService(MemoryRouter::new()))),
         "nostr_memory_mcp" => {
             // Try to get NOSTR_NSEC from config first, then fall back to environment
