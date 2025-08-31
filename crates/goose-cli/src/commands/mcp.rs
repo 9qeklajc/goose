@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use goose_mcp::{
-    AutoVisualiserRouter, ComputerControllerRouter, DeveloperRouter, MemoryRouter, TutorialRouter,
+    AutoVisualiserRouter, ComputerControllerRouter, DeveloperRouter, MemoryRouter, TutorialRouter, NostrMcpRouter,
 };
 use mcp_server::router::RouterService;
 use mcp_server::{BoundedService, ByteTransport, Server};
@@ -32,6 +32,16 @@ pub async fn run_server(name: &str) -> Result<()> {
         "computercontroller" => Some(Box::new(RouterService(ComputerControllerRouter::new()))),
         "autovisualiser" => Some(Box::new(RouterService(AutoVisualiserRouter::new()))),
         "memory" => Some(Box::new(RouterService(MemoryRouter::new()))),
+        "nostr_memory_mcp" => {
+            // Try to get NOSTR_NSEC from config first, then fall back to environment
+            let nsec = goose::config::Config::global()
+                .get("NOSTR_NSEC", true)
+                .ok()
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .or_else(|| std::env::var("NOSTR_NSEC").ok());
+            let router = NostrMcpRouter::new(nsec);
+            Some(Box::new(RouterService(router)))
+        }
         "tutorial" => Some(Box::new(RouterService(TutorialRouter::new()))),
         _ => None,
     };
