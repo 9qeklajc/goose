@@ -8,5 +8,4 @@ pub mod schedule;
 pub mod session;
 pub mod term;
 pub mod update;
-// TODO(ROU-27): wallet CLI depends on routstr provider; re-enable once routstr is ported
-// pub mod wallet;
+pub mod wallet;

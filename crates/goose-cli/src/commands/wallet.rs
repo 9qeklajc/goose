@@ -1,10 +1,11 @@
 use anyhow::Result;
 use bip39::Mnemonic;
+use cdk::amount::SplitTarget;
 use cdk::nuts::CurrencyUnit;
 use cdk::nuts::Token;
 use cdk::wallet::{SendOptions, Wallet};
 use cdk::Amount;
-use cdk_sqlite::WalletSqliteDatabase;
+use cdk_redb::WalletRedbDatabase;
 use goose::config::Config;
 use home::home_dir;
 use reqwest::Client;
@@ -27,13 +28,40 @@ pub async fn handle_wallet_balance() -> Result<()> {
 
     println!("sats: {}", balance);
 
-    let pre_swap = wallet.swap_from_unspent(balance, None, false).await?;
+    let proofs = consolidate_proofs(&wallet, balance).await?;
 
-    let token = Token::new(wallet.mint_url, pre_swap, None, wallet.unit);
+    let token = Token::new(
+        wallet.mint_url.clone(),
+        proofs,
+        None,
+        wallet.unit.clone(),
+    );
 
     set_current_token(token.to_string())?;
 
     Ok(())
+}
+
+async fn consolidate_proofs(wallet: &Wallet, balance: Amount) -> Result<cdk::nuts::Proofs> {
+    let unspent = wallet.get_unspent_proofs().await?;
+    if balance == Amount::ZERO || unspent.is_empty() {
+        return Ok(unspent);
+    }
+
+    let swapped = wallet
+        .swap(
+            Some(balance),
+            SplitTarget::default(),
+            unspent.clone(),
+            None,  // spending_conditions
+            false, // include_fees
+            false, // use_p2bk
+        )
+        .await?;
+
+    // swap returns Ok(None) when proofs are already in optimal denominations;
+    // fall back to the unspent set so the encoded token still matches the balance.
+    Ok(swapped.unwrap_or(unspent))
 }
 
 fn get_current_token() -> Result<String> {
@@ -132,9 +160,14 @@ pub async fn handle_wallet_topup(top_up_token: String) -> Result<()> {
 
     let balance = wallet.total_balance().await?;
 
-    let pre_swap = wallet.swap_from_unspent(balance, None, false).await?;
+    let proofs = consolidate_proofs(&wallet, balance).await?;
 
-    let token = Token::new(wallet.mint_url, pre_swap, None, wallet.unit);
+    let token = Token::new(
+        wallet.mint_url.clone(),
+        proofs,
+        None,
+        wallet.unit.clone(),
+    );
 
     set_current_token(token.to_string())?;
 
@@ -158,9 +191,9 @@ pub async fn handle_wallet_withdraw(amount: Option<u64>) -> Result<()> {
 
         let prep_send = wallet.prepare_send(amount, SendOptions::default()).await?;
 
-        let send = wallet.send(prep_send, None).await?;
+        let token = prep_send.confirm(None).await?;
 
-        println!("{}", send);
+        println!("{}", token);
     } else {
         println!("Wallet is empty.");
     }
@@ -171,9 +204,9 @@ pub async fn handle_wallet_withdraw(amount: Option<u64>) -> Result<()> {
 async fn initialize_wallet() -> Result<Wallet> {
     let work_dir = home_dir().unwrap().join(".cdk-gooose");
     fs::create_dir_all(&work_dir)?;
-    let cdk_wallet_path = work_dir.join("cdk-goose.sqlite");
+    let cdk_wallet_path = work_dir.join("cdk-goose.redb");
 
-    let wallet_db = WalletSqliteDatabase::new(&cdk_wallet_path).await?;
+    let wallet_db = WalletRedbDatabase::new(&cdk_wallet_path)?;
 
     let seed_path = work_dir.join("seed");
 
@@ -197,9 +230,15 @@ async fn initialize_wallet() -> Result<Wallet> {
         DEFAULT_MINT_URL,
         currency_unit,
         Arc::new(wallet_db),
-        &seed,
+        seed,
         None,
     )?;
+
+    // Best-effort: release any proofs left in `Reserved` from an interrupted
+    // swap/send/melt. A failure here must not block opening the wallet.
+    if let Err(e) = wallet.recover_incomplete_sagas().await {
+        tracing::warn!("recover_incomplete_sagas failed: {}", e);
+    }
 
     Ok(wallet)
 }

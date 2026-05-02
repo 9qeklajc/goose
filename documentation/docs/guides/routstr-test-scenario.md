@@ -12,11 +12,9 @@ What this branch ships:
   that posts to a Routstr host and authenticates with a Cashu token
   (`crates/goose/src/providers/routstr.rs`).
 - A wallet CLI module (`crates/goose-cli/src/commands/wallet.rs`) with
-  `Balance`, `Topup`, and `Withdraw` flows backed by CDK + a local SQLite
-  wallet at `~/.cdk-gooose/cdk-goose.sqlite`. The subcommand wiring is
-  currently commented out under `TODO(ROU-27)` in `crates/goose-cli/src/cli.rs`
-  while the provider is being ported to the new `Provider` trait — see
-  *Known limitation* below.
+  `Balance`, `Topup`, and `Withdraw` flows backed by CDK 0.16 + a local
+  redb wallet store at `~/.cdk-gooose/cdk-goose.redb`. Exposed as
+  `goose wallet …` on the CLI.
 
 ## Configuration
 
@@ -35,7 +33,7 @@ Wallet defaults (constants in `wallet.rs` / `routstr.rs`):
 - Mint: `https://mint.minibits.cash/Bitcoin`
 - Currency unit: `sat`
 - Wallet dir: `~/.cdk-gooose/` (BIP-39 seed at `~/.cdk-gooose/seed`,
-  SQLite at `~/.cdk-gooose/cdk-goose.sqlite`).
+  redb store at `~/.cdk-gooose/cdk-goose.redb`).
 
 ## Prerequisites
 
@@ -55,9 +53,13 @@ Wallet defaults (constants in `wallet.rs` / `routstr.rs`):
 cargo build -p goose-cli --release
 ```
 
-The branch adds these crates to `goose-cli`: `cdk`, `cdk-sqlite`, `bip39`,
-`home`, `url`, `tokio`, `tracing`, `serde_json`. A clean build should succeed
-without network access to the mint (CDK initialises lazily).
+The branch adds these crates to `goose-cli`: `cdk` (0.16), `cdk-redb`
+(0.16), `bip39`, `home`, `url`, `tokio`, `tracing`, `serde_json`. We use
+`cdk-redb` instead of `cdk-sqlite` because cdk-sqlite's rusqlite pulls in
+`libsqlite3-sys 0.28`, which conflicts with goose's `sqlx 0.8.x`
+(`libsqlite3-sys 0.30`) at the cargo `links = "sqlite3"` rule. A clean
+build should succeed without network access to the mint (CDK initialises
+lazily).
 
 ## Scenario 1 — Provider smoke test (no wallet)
 
@@ -88,11 +90,6 @@ via Scenario 2.
 
 Verifies that the CDK wallet creates a seed, receives a Cashu token, and
 swaps the balance into a single token written back to `ROUTSTR_API_KEY`.
-
-> **Re-enable required.** Uncomment the `Wallet { command: WalletCommand }`
-> arm and the `WalletCommand` enum in `crates/goose-cli/src/cli.rs` before
-> running this scenario, or call the handlers directly from a test binary.
-> Tracked by `TODO(ROU-27)`.
 
 1. From a fresh `$HOME` (or after deleting `~/.cdk-gooose/`), run
    `goose wallet balance`.
@@ -164,22 +161,27 @@ and the amount matches.
   implementation — verify by pointing `ROUTSTR_HOST` at an unreachable
   address and confirming `goose providers list` does not panic.
 
-## Known limitation — `TODO(ROU-27)`
+## Known limitation — `RoutstrProvider` still gated
 
-`crates/goose-cli/src/cli.rs` currently has the wallet subcommand and its
-`WalletCommand` enum commented out:
+The wallet CLI is fully functional and exposed as `goose wallet …`, but
+`RoutstrProvider` itself (`crates/goose/src/providers/routstr.rs`) still
+uses the old `Provider` trait shape and is not yet registered. The module
+declaration is commented out in `crates/goose/src/providers/mod.rs`:
 
 ```text
-// TODO(ROU-27): wallet subcommands disabled while routstr provider is being
-// ported to new Provider trait
+// TODO(ROU-27): port RoutstrProvider to new Provider/ProviderDef trait + register in init.rs
+// pub mod routstr;
 ```
 
-Until the provider port lands, `goose wallet …` is not exposed on the CLI.
-Reviewers running Scenarios 2–4 must either:
+Effects on this test plan:
 
-- Uncomment the two blocks in `cli.rs` and rebuild, or
-- Drive the handlers (`handle_wallet_balance`, `handle_wallet_topup`,
-  `handle_wallet_withdraw`) directly from an integration test binary.
+- **Scenario 1 (provider smoke test)** cannot be run end-to-end against
+  `goose session`/`goose run` until the provider is ported. As a partial
+  substitute, set `ROUTSTR_API_KEY` manually, run Scenarios 2–4 to
+  exercise the wallet path, and verify the proxy refund integration via
+  Scenario 3.
+- **Scenarios 2–4 (wallet flows)** work today and can be reviewed without
+  the provider port — they only depend on CDK and `ROUTSTR_HOST` reachability.
 
-This re-enable is the next step in ROU-27 and is intentionally out of scope
-for this PR.
+The provider port is the next step in ROU-27 and is intentionally out of
+scope for this change.
