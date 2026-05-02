@@ -33,14 +33,15 @@
 use super::errors::ProviderError;
 use super::ollama::OLLAMA_DEFAULT_PORT;
 use super::ollama::OLLAMA_HOST;
-use crate::message::{Message, MessageContent};
+use crate::conversation::message::{Message, MessageContent};
+use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::formats::openai::create_request;
 use anyhow::Result;
-use mcp_core::tool::{Tool, ToolCall};
-use mcp_core::Content;
 use reqwest::Client;
+use rmcp::model::{object, CallToolRequestParams, RawContent, Tool};
 use serde_json::{json, Value};
+use std::ops::Deref;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -58,7 +59,7 @@ pub trait ToolInterpreter {
         &self,
         content: &str,
         tools: &[Tool],
-    ) -> Result<Vec<ToolCall>, ProviderError>;
+    ) -> Result<Vec<CallToolRequestParams>, ProviderError>;
 }
 
 /// Ollama-specific implementation of the ToolInterpreter trait
@@ -88,12 +89,12 @@ impl OllamaInterpreter {
 
         // Format the URL correctly with http:// prefix if needed
         let base = if host.starts_with("http://") || host.starts_with("https://") {
-            host.clone()
+            &host
         } else {
-            format!("http://{}", host)
+            &format!("http://{}", host)
         };
 
-        let mut base_url = url::Url::parse(&base)
+        let mut base_url = url::Url::parse(base)
             .map_err(|e| ProviderError::RequestFailed(format!("Invalid base URL: {e}")))?;
 
         // Set the default port if missing
@@ -112,7 +113,7 @@ impl OllamaInterpreter {
         Ok(base_url.to_string())
     }
 
-    fn tool_structured_ouput_format_schema() -> Value {
+    fn tool_structured_output_format_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
@@ -152,7 +153,9 @@ impl OllamaInterpreter {
         let user_message = Message::user().with_text(format_instruction);
         messages.push(user_message);
 
-        let model_config = ModelConfig::new(model.to_string());
+        let model_config = ModelConfig::new(model)
+            .map_err(|e| ProviderError::RequestFailed(format!("Model config error: {e}")))?
+            .with_canonical_limits("ollama");
 
         let mut payload = create_request(
             &model_config,
@@ -160,6 +163,7 @@ impl OllamaInterpreter {
             &messages,
             &[], // No tools
             &super::utils::ImageFormat::OpenAi,
+            false,
         )?;
 
         payload["stream"] = json!(false); // needed for the /api/chat endpoint to work
@@ -195,7 +199,9 @@ impl OllamaInterpreter {
         Ok(response_json)
     }
 
-    fn process_interpreter_response(response: &Value) -> Result<Vec<ToolCall>, ProviderError> {
+    fn process_interpreter_response(
+        response: &Value,
+    ) -> Result<Vec<CallToolRequestParams>, ProviderError> {
         let mut tool_calls = Vec::new();
         tracing::info!(
             "Tool interpreter response is {}",
@@ -216,12 +222,14 @@ impl OllamaInterpreter {
                                 && item.get("name").is_some()
                                 && item.get("arguments").is_some()
                             {
-                                // Create ToolCall directly from the JSON data
                                 let name = item["name"].as_str().unwrap_or_default().to_string();
                                 let arguments = item["arguments"].clone();
 
                                 // Add the tool call to our result vector
-                                tool_calls.push(ToolCall::new(name, arguments));
+                                tool_calls.push(
+                                    CallToolRequestParams::new(name)
+                                        .with_arguments(object(arguments)),
+                                );
                             }
                         }
                     }
@@ -239,7 +247,7 @@ impl ToolInterpreter for OllamaInterpreter {
         &self,
         last_assistant_msg: &str,
         tools: &[Tool],
-    ) -> Result<Vec<ToolCall>, ProviderError> {
+    ) -> Result<Vec<CallToolRequestParams>, ProviderError> {
         if tools.is_empty() {
             return Ok(vec![]);
         }
@@ -273,7 +281,7 @@ Otherwise, if no JSON tool requests are provided, use the no-op tool:
         let format_instruction = format!("{}\nRequest: {}\n\n", system_prompt, last_assistant_msg);
 
         // Define the JSON schema for tool call format
-        let format_schema = OllamaInterpreter::tool_structured_ouput_format_schema();
+        let format_schema = OllamaInterpreter::tool_structured_output_format_schema();
 
         // Determine which model to use for interpretation (from env var or default)
         let interpreter_model = std::env::var("GOOSE_TOOLSHIM_OLLAMA_MODEL")
@@ -296,7 +304,7 @@ pub fn format_tool_info(tools: &[Tool]) -> String {
     let mut tool_info = String::new();
     for tool in tools {
         tool_info.push_str(&format!(
-            "Tool Name: {}\nSchema: {}\nDescription: {}\n\n",
+            "Tool Name: {}\nSchema: {}\nDescription: {:?}\n\n",
             tool.name,
             serde_json::to_string_pretty(&tool.input_schema).unwrap_or_default(),
             tool.description
@@ -308,8 +316,8 @@ pub fn format_tool_info(tools: &[Tool]) -> String {
 /// Convert messages containing ToolRequest/ToolResponse to text messages for toolshim mode
 /// This is necessary because some providers (like Bedrock) validate that tool_use/tool_result
 /// blocks can only exist when tools are defined, but in toolshim mode we pass empty tools
-pub fn convert_tool_messages_to_text(messages: &[Message]) -> Vec<Message> {
-    messages
+pub fn convert_tool_messages_to_text(messages: &[Message]) -> Conversation {
+    let converted_messages: Vec<Message> = messages
         .iter()
         .map(|message| {
             let mut new_content = Vec::new();
@@ -337,11 +345,12 @@ pub fn convert_tool_messages_to_text(messages: &[Message]) -> Vec<Message> {
                         has_tool_content = true;
                         // Convert tool response to text format
                         let text = match &res.tool_result {
-                            Ok(contents) => {
-                                let text_contents: Vec<String> = contents
+                            Ok(result) => {
+                                let text_contents: Vec<String> = result
+                                    .content
                                     .iter()
-                                    .filter_map(|c| match c {
-                                        Content::Text(t) => Some(t.text.clone()),
+                                    .filter_map(|c| match c.deref() {
+                                        RawContent::Text(t) => Some(t.text.clone()),
                                         _ => None,
                                     })
                                     .collect();
@@ -359,16 +368,14 @@ pub fn convert_tool_messages_to_text(messages: &[Message]) -> Vec<Message> {
             }
 
             if has_tool_content {
-                Message {
-                    role: message.role.clone(),
-                    content: new_content,
-                    created: message.created,
-                }
+                Message::new(message.role.clone(), message.created, new_content)
             } else {
                 message.clone()
             }
         })
-        .collect()
+        .collect();
+
+    Conversation::new_unvalidated(converted_messages)
 }
 
 /// Modifies the system prompt to include tool usage instructions when tool interpretation is enabled

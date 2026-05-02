@@ -1,10 +1,13 @@
+import { getProviderModels, readConfig } from '../../../../../../api';
+
 /**
  * Standalone function to submit provider configuration
  * Useful for components that don't want to use the hook
  */
-export const DefaultSubmitHandler = async (
+export const providerConfigSubmitHandler = async (
   upsertFn: (key: string, value: unknown, isSecret: boolean) => Promise<void>,
   provider: {
+    name: string;
     metadata: {
       config_keys?: Array<{
         name: string;
@@ -14,39 +17,96 @@ export const DefaultSubmitHandler = async (
       }>;
     };
   },
-  configValues: Record<string, unknown>
+  configValues: Record<string, string>
 ) => {
   const parameters = provider.metadata.config_keys || [];
 
-  const upsertPromises = parameters.map(
-    (parameter: { name: string; required?: boolean; default?: unknown; secret?: boolean }) => {
-      // Skip parameters that don't have a value and aren't required
-      if (!configValues[parameter.name] && !parameter.required) {
-        return Promise.resolve();
+  // Save current NON-SECRET config values for rollback on failure
+  // We skip secrets because readConfig returns masked values for secrets,
+  // and upserting those masked values would corrupt the actual secret
+  const previousConfigValues: Record<string, { value: unknown; isSecret: boolean }> = {};
+  const nonSecretParams = parameters.filter((param) => !param.secret);
+
+  await Promise.all(
+    nonSecretParams.map(async (param) => {
+      try {
+        const currentValue = await readConfig({
+          body: { key: param.name, is_secret: false },
+        });
+        if (currentValue.data) {
+          previousConfigValues[param.name] = {
+            value: currentValue.data,
+            isSecret: false,
+          };
+        }
+      } catch {
+        // No previous value exists, that's fine
+      }
+    })
+  );
+
+  const requiredParams = parameters.filter((param) => param.required);
+  if (requiredParams.length === 0 && parameters.length > 0) {
+    const allOptionalWithDefaults = parameters.every(
+      (param) => !param.required && param.default !== undefined
+    );
+    if (allOptionalWithDefaults) {
+      const promises: Promise<void>[] = [];
+
+      for (const param of parameters) {
+        if (param.default !== undefined) {
+          const value =
+            configValues[param.name] !== undefined ? configValues[param.name] : param.default;
+          promises.push(upsertFn(param.name, value, param.secret === true));
+        }
       }
 
-      // For required parameters with no value, use the default if available
+      await Promise.all(promises);
+      return;
+    }
+  }
+
+  const upsertPromises = parameters.map(
+    async (parameter: {
+      name: string;
+      required?: boolean;
+      default?: unknown;
+      secret?: boolean;
+    }) => {
+      if (!configValues[parameter.name] && !parameter.required) {
+        return;
+      }
+
       const value =
         configValues[parameter.name] !== undefined
           ? configValues[parameter.name]
           : parameter.default;
 
-      // Skip if there's still no value
       if (value === undefined || value === null) {
-        return Promise.resolve();
+        return;
       }
 
-      // Create the provider-specific config key
       const configKey = `${parameter.name}`;
-
-      // Explicitly define is_secret as a boolean (true/false)
       const isSecret = parameter.secret === true;
 
-      // Pass the is_secret flag from the parameter definition
-      return upsertFn(configKey, value, isSecret);
+      await upsertFn(configKey, value, isSecret);
     }
   );
 
-  // Wait for all upsert operations to complete
-  return Promise.all(upsertPromises);
+  await Promise.all(upsertPromises);
+
+  try {
+    await getProviderModels({
+      path: { name: provider.name },
+      throwOnError: true,
+    });
+  } catch (error) {
+    const rollbackPromises: Promise<void>[] = [];
+    for (const [key, { value, isSecret }] of Object.entries(previousConfigValues)) {
+      rollbackPromises.push(upsertFn(key, value, isSecret));
+    }
+    await Promise.all(rollbackPromises);
+
+    throw error;
+  }
 };

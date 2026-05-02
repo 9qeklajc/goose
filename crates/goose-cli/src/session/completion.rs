@@ -1,28 +1,34 @@
-use rustyline::completion::{Completer, Pair};
+use goose::config::GooseMode;
+use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::{CmdKind, Highlighter};
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use rustyline::{Helper, Result};
+use rustyline::{Context, Helper, Result};
 use std::borrow::Cow;
 use std::sync::Arc;
+use strum::VariantNames;
 
-use super::CompletionCache;
+use super::{CompletionCache, HintStatus};
 
-/// Completer for Goose CLI commands
+/// Completer for goose CLI commands
 pub struct GooseCompleter {
-    completion_cache: Arc<std::sync::RwLock<CompletionCache>>,
+    pub completion_cache: Arc<std::sync::RwLock<CompletionCache>>,
+    filename_completer: FilenameCompleter,
 }
 
 impl GooseCompleter {
     /// Create a new GooseCompleter with a reference to the Session's completion cache
     pub fn new(completion_cache: Arc<std::sync::RwLock<CompletionCache>>) -> Self {
-        Self { completion_cache }
+        Self {
+            completion_cache,
+            filename_completer: FilenameCompleter::new(),
+        }
     }
 
     /// Complete prompt names for the /prompt command
     fn complete_prompt_names(&self, line: &str) -> Result<(usize, Vec<Pair>)> {
         // Get the prefix of the prompt name being typed
-        let prefix = if line.len() > 8 { &line[8..] } else { "" };
+        let prefix = line.get(8..).unwrap_or("");
 
         // Get available prompts from cache
         let cache = self.completion_cache.read().unwrap();
@@ -77,7 +83,7 @@ impl GooseCompleter {
 
     /// Complete flags for the /mode command
     fn complete_mode_flags(&self, line: &str) -> Result<(usize, Vec<Pair>)> {
-        let modes = ["auto", "approve", "smart_approve", "chat"];
+        let modes = GooseMode::VARIANTS;
 
         let parts: Vec<&str> = line.split_whitespace().collect();
 
@@ -115,6 +121,31 @@ impl GooseCompleter {
         Ok((line.len(), vec![]))
     }
 
+    /// Complete skill names for the /skills command
+    fn complete_skill_names(&self, line: &str) -> Result<(usize, Vec<Pair>)> {
+        use goose::skills::list_installed_skills;
+
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let skills = list_installed_skills(Some(&cwd));
+        let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+
+        // Complete the last letter being typed (e.g. "/skills coding in<tab>")
+        let last = line.rsplit_once(' ').map_or("", |(_, w)| w);
+        let pos = line.len() - last.len();
+
+        let partial = last.to_lowercase();
+        let candidates: Vec<Pair> = skill_names
+            .iter()
+            .filter(|name| name.to_lowercase().starts_with(&partial))
+            .map(|name| Pair {
+                display: name.clone(),
+                replacement: format!("{} ", name),
+            })
+            .collect();
+
+        Ok((pos, candidates))
+    }
+
     /// Complete slash commands
     fn complete_slash_commands(&self, line: &str) -> Result<(usize, Vec<Pair>)> {
         // Define available slash commands
@@ -130,6 +161,7 @@ impl GooseCompleter {
             "/prompt",
             "/mode",
             "/recipe",
+            "/skills",
         ];
 
         // Find commands that match the prefix
@@ -152,7 +184,7 @@ impl GooseCompleter {
 
     /// Complete argument keys for a specific prompt
     fn complete_argument_keys(&self, line: &str) -> Result<(usize, Vec<Pair>)> {
-        let parts: Vec<&str> = line[8..].split_whitespace().collect();
+        let parts: Vec<&str> = line.get(8..).unwrap_or("").split_whitespace().collect();
 
         // We need at least the prompt name
         if parts.is_empty() {
@@ -254,6 +286,35 @@ impl GooseCompleter {
         // No completions available
         Ok((line.len(), vec![]))
     }
+
+    /// Complete file paths
+    fn complete_file_path(&self, line: &str, ctx: &Context) -> Result<(usize, Vec<Pair>)> {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+
+        if let Some(last_part) = parts.last() {
+            // Skip filename completion for words starting with special characters
+            if last_part.starts_with('/') && last_part.len() == 1 {
+                // Just a slash - no completion
+                return Ok((line.len(), vec![]));
+            }
+
+            if last_part.starts_with('-') || last_part.contains('=') {
+                // Skip flag or key-value pairs
+                return Ok((line.len(), vec![]));
+            }
+
+            // Complete the partial path
+            let pos = line.len() - last_part.len();
+            let (start, candidates) =
+                self.filename_completer
+                    .complete(last_part, last_part.len(), ctx)?;
+
+            // Return the completion results, with adjusted position
+            return Ok((pos + start, candidates));
+        }
+
+        Ok((line.len(), vec![]))
+    }
 }
 
 impl Completer for GooseCompleter {
@@ -263,7 +324,7 @@ impl Completer for GooseCompleter {
         &self,
         line: &str,
         pos: usize,
-        _ctx: &rustyline::Context<'_>,
+        ctx: &Context<'_>,
     ) -> Result<(usize, Vec<Self::Candidate>)> {
         // If the cursor is not at the end of the line, don't try to complete
         if pos < line.len() {
@@ -338,10 +399,16 @@ impl Completer for GooseCompleter {
             if line.starts_with("/mode") {
                 return self.complete_mode_flags(line);
             }
+
+            if line.starts_with("/skills ") {
+                return self.complete_skill_names(line);
+            }
+
+            return Ok((pos, vec![]));
         }
 
-        // Default: no completions
-        Ok((pos, vec![]))
+        // For normal text (not slash commands), try file path completion
+        self.complete_file_path(line, ctx)
     }
 }
 
@@ -352,12 +419,31 @@ impl Helper for GooseCompleter {}
 impl Hinter for GooseCompleter {
     type Hint = String;
 
-    fn hint(&self, line: &str, _pos: usize, _ctx: &rustyline::Context<'_>) -> Option<Self::Hint> {
-        // Only show hint when line is empty
-        if line.is_empty() {
-            Some("Press Enter to send, Ctrl-J for new line".to_string())
-        } else {
-            None
+    fn hint(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
+        let cache = self.completion_cache.read().unwrap();
+
+        if !line.is_empty() && cache.hint_status != HintStatus::Default {
+            drop(cache);
+            let mut cache_write = self.completion_cache.write().unwrap();
+            cache_write.hint_status = HintStatus::Default;
+            return None;
+        }
+
+        if !line.is_empty() {
+            return None;
+        }
+
+        match cache.hint_status {
+            HintStatus::Interrupted => {
+                Some("Interrupted, what should goose work on instead?".to_string())
+            }
+            HintStatus::MaybeExit => {
+                Some("Press Ctrl+C again to exit, or type new instructions to continue".to_string())
+            }
+            HintStatus::Default => {
+                let newline_key = super::input::get_newline_key().to_ascii_uppercase();
+                Some(format!("Enter to send · Ctrl+{} newline", newline_key))
+            }
         }
     }
 }
@@ -390,16 +476,17 @@ impl Validator for GooseCompleter {
     fn validate(
         &self,
         _ctx: &mut rustyline::validate::ValidationContext,
-    ) -> rustyline::Result<rustyline::validate::ValidationResult> {
+    ) -> Result<rustyline::validate::ValidationResult> {
         Ok(rustyline::validate::ValidationResult::Valid(None))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::PromptArgument;
+
     use super::*;
     use crate::session::output;
-    use mcp_core::prompt::PromptArgument;
     use std::sync::{Arc, RwLock};
 
     // Helper function to create a test completion cache
@@ -407,31 +494,23 @@ mod tests {
         let mut cache = CompletionCache::new();
 
         // Add some test prompts
-        let mut extension1_prompts = Vec::new();
-        extension1_prompts.push("test_prompt1".to_string());
-        extension1_prompts.push("test_prompt2".to_string());
-        cache
-            .prompts
-            .insert("extension1".to_string(), extension1_prompts);
+        cache.prompts.insert(
+            "extension1".to_string(),
+            vec!["test_prompt1".to_string(), "test_prompt2".to_string()],
+        );
 
-        let mut extension2_prompts = Vec::new();
-        extension2_prompts.push("other_prompt".to_string());
         cache
             .prompts
-            .insert("extension2".to_string(), extension2_prompts);
+            .insert("extension2".to_string(), vec!["other_prompt".to_string()]);
 
         // Add prompt info with arguments
         let test_prompt1_args = vec![
-            PromptArgument {
-                name: "required_arg".to_string(),
-                description: Some("A required argument".to_string()),
-                required: Some(true),
-            },
-            PromptArgument {
-                name: "optional_arg".to_string(),
-                description: Some("An optional argument".to_string()),
-                required: Some(false),
-            },
+            PromptArgument::new("required_arg")
+                .with_description("A required argument")
+                .with_required(true),
+            PromptArgument::new("optional_arg")
+                .with_description("An optional argument")
+                .with_required(false),
         ];
 
         let test_prompt1_info = output::PromptInfo {
@@ -483,7 +562,7 @@ mod tests {
         let (pos, candidates) = completer.complete_slash_commands("/e").unwrap();
         assert_eq!(pos, 0);
         // There might be multiple commands starting with "e" like "/exit" and "/extension"
-        assert!(candidates.len() >= 1);
+        assert!(!candidates.is_empty());
 
         // Test multiple matches
         let (pos, candidates) = completer.complete_slash_commands("/").unwrap();

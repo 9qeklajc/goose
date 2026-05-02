@@ -1,26 +1,40 @@
 use std::sync::Arc;
+use tokio::fs;
 
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
-use chrono::NaiveDateTime;
-
-use crate::routes::utils::verify_secret_key;
+use crate::routes::errors::ErrorResponse;
+use crate::routes::recipe_utils::validate_recipe;
 use crate::state::AppState;
-use goose::scheduler::ScheduledJob;
+use goose::recipe::Recipe;
+use goose::scheduler::{get_default_scheduled_recipes_dir, ScheduledJob};
+
+fn validate_schedule_id(id: &str) -> Result<(), ErrorResponse> {
+    let is_valid = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ');
+
+    if !is_valid {
+        return Err(ErrorResponse::bad_request(
+            "Schedule name must use only alphanumeric characters, hyphens, underscores, or spaces"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 pub struct CreateScheduleRequest {
     id: String,
-    recipe_source: String,
+    recipe: Recipe,
     cron: String,
-    #[serde(default)]
-    execution_mode: Option<String>, // "foreground" or "background"
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -39,7 +53,6 @@ pub struct KillJobResponse {
     message: String,
 }
 
-// Response for the inspect endpoint
 #[derive(Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct InspectJobResponse {
@@ -54,25 +67,19 @@ pub struct RunNowResponse {
     session_id: String,
 }
 
-// Query parameters for the sessions endpoint
 #[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct SessionsQuery {
-    #[serde(default = "default_limit")]
-    limit: u32,
-}
-
-fn default_limit() -> u32 {
-    50 // Default limit for sessions listed
+    limit: usize,
 }
 
 // Struct for the frontend session list
 #[derive(Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionDisplayInfo {
-    id: String,          // Derived from session_name (filename)
-    name: String,        // From metadata.description
-    created_at: String,  // Derived from session_name, in ISO 8601 format
-    working_dir: String, // from metadata.working_dir (as String)
+    id: String,
+    name: String,
+    created_at: String,
+    working_dir: String,
     schedule_id: Option<String>,
     message_count: usize,
     total_tokens: Option<i32>,
@@ -81,12 +88,6 @@ pub struct SessionDisplayInfo {
     accumulated_total_tokens: Option<i32>,
     accumulated_input_tokens: Option<i32>,
     accumulated_output_tokens: Option<i32>,
-}
-
-fn parse_session_name_to_iso(session_name: &str) -> String {
-    NaiveDateTime::parse_from_str(session_name, "%Y%m%d_%H%M%S")
-        .map(|dt| dt.and_utc().to_rfc3339())
-        .unwrap_or_else(|_| String::new()) // Fallback to empty string if parsing fails
 }
 
 #[utoipa::path(
@@ -104,43 +105,64 @@ fn parse_session_name_to_iso(session_name: &str) -> String {
 #[axum::debug_handler]
 async fn create_schedule(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Json(req): Json<CreateScheduleRequest>,
-) -> Result<Json<ScheduledJob>, StatusCode> {
-    verify_secret_key(&headers, &state)?;
-    let scheduler = state
-        .scheduler()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<ScheduledJob>, ErrorResponse> {
+    let id = req.id.trim().to_string();
+    validate_schedule_id(&id)?;
 
-    tracing::info!(
-        "Server: Calling scheduler.add_scheduled_job() for job '{}'",
-        req.id
-    );
+    if req.recipe.check_for_security_warnings() {
+        return Err(ErrorResponse::bad_request(
+            "This recipe contains hidden characters that could be malicious. Please remove them before trying to save.".to_string(),
+        ));
+    }
+    if let Err(err) = validate_recipe(&req.recipe) {
+        return Err(ErrorResponse {
+            message: err.message,
+            status: err.status,
+        });
+    }
+    let scheduled_recipes_dir = get_default_scheduled_recipes_dir().map_err(|e| {
+        ErrorResponse::internal(format!("Failed to get scheduled recipes directory: {}", e))
+    })?;
+
+    let recipe_path = scheduled_recipes_dir.join(format!("{}.yaml", id));
+    let yaml_content = req
+        .recipe
+        .to_yaml()
+        .map_err(|e| ErrorResponse::internal(format!("Failed to convert recipe to YAML: {}", e)))?;
+    fs::write(&recipe_path, yaml_content)
+        .await
+        .map_err(|e| ErrorResponse::internal(format!("Failed to save recipe file: {}", e)))?;
+
     let job = ScheduledJob {
-        id: req.id,
-        source: req.recipe_source,
+        id,
+        source: recipe_path.to_string_lossy().into_owned(),
         cron: req.cron,
         last_run: None,
         currently_running: false,
         paused: false,
         current_session_id: None,
         process_start_time: None,
-        execution_mode: req.execution_mode.or(Some("background".to_string())), // Default to background
     };
+
+    let scheduler = state.scheduler();
     scheduler
-        .add_scheduled_job(job.clone())
+        .add_scheduled_job(job.clone(), false)
         .await
-        .map_err(|e| {
-            eprintln!("Error creating schedule: {:?}", e); // Log error
-            match e {
-                goose::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-                goose::scheduler::SchedulerError::CronParseError(_) => StatusCode::BAD_REQUEST,
-                goose::scheduler::SchedulerError::RecipeLoadError(_) => StatusCode::BAD_REQUEST,
-                goose::scheduler::SchedulerError::JobIdExists(_) => StatusCode::CONFLICT,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
+        .map_err(|e| match e {
+            goose::scheduler::SchedulerError::CronParseError(msg) => {
+                ErrorResponse::bad_request(format!("Invalid cron expression: {}", msg))
             }
+            goose::scheduler::SchedulerError::RecipeLoadError(msg) => {
+                ErrorResponse::bad_request(format!("Recipe load error: {}", msg))
+            }
+            goose::scheduler::SchedulerError::JobIdExists(msg) => ErrorResponse {
+                message: format!("Job ID already exists: {}", msg),
+                status: StatusCode::CONFLICT,
+            },
+            _ => ErrorResponse::internal(format!("Error creating schedule: {}", e)),
         })?;
+
     Ok(Json(job))
 }
 
@@ -156,19 +178,10 @@ async fn create_schedule(
 #[axum::debug_handler]
 async fn list_schedules(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<Json<ListSchedulesResponse>, StatusCode> {
-    verify_secret_key(&headers, &state)?;
-    let scheduler = state
-        .scheduler()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<ListSchedulesResponse>, ErrorResponse> {
+    let scheduler = state.scheduler();
 
-    tracing::info!("Server: Calling scheduler.list_scheduled_jobs()");
-    let jobs = scheduler.list_scheduled_jobs().await.map_err(|e| {
-        eprintln!("Error listing schedules: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let jobs = scheduler.list_scheduled_jobs().await;
     Ok(Json(ListSchedulesResponse { jobs }))
 }
 
@@ -188,21 +201,18 @@ async fn list_schedules(
 #[axum::debug_handler]
 async fn delete_schedule(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
-    verify_secret_key(&headers, &state)?;
-    let scheduler = state
-        .scheduler()
+) -> Result<StatusCode, ErrorResponse> {
+    let scheduler = state.scheduler();
+    scheduler
+        .remove_scheduled_job(&id, true)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    scheduler.remove_scheduled_job(&id).await.map_err(|e| {
-        eprintln!("Error deleting schedule '{}': {:?}", id, e);
-        match e {
-            goose::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    })?;
+        .map_err(|e| match e {
+            goose::scheduler::SchedulerError::JobNotFound(msg) => {
+                ErrorResponse::not_found(format!("Schedule not found: {}", msg))
+            }
+            _ => ErrorResponse::internal(format!("Error deleting schedule: {}", e)),
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -222,37 +232,81 @@ async fn delete_schedule(
 #[axum::debug_handler]
 async fn run_now_handler(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<RunNowResponse>, StatusCode> {
-    verify_secret_key(&headers, &state)?;
-    let scheduler = state
-        .scheduler()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<RunNowResponse>, ErrorResponse> {
+    let scheduler = state.scheduler();
 
-    tracing::info!("Server: Calling scheduler.run_now() for job '{}'", id);
+    let (recipe_display_name, recipe_version_opt) = if let Some(job) = scheduler
+        .list_scheduled_jobs()
+        .await
+        .into_iter()
+        .find(|job| job.id == id)
+    {
+        let recipe_display_name = std::path::Path::new(&job.source)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| id.clone());
+
+        let recipe_version_opt =
+            tokio::fs::read_to_string(&job.source)
+                .await
+                .ok()
+                .and_then(|content: String| {
+                    goose::recipe::template_recipe::parse_recipe_content(
+                        &content,
+                        Some(
+                            std::path::Path::new(&job.source)
+                                .parent()
+                                .unwrap_or_else(|| std::path::Path::new(""))
+                                .to_string_lossy()
+                                .to_string(),
+                        ),
+                    )
+                    .ok()
+                    .map(|(r, _)| r.version)
+                });
+
+        (recipe_display_name, recipe_version_opt)
+    } else {
+        (id.clone(), None)
+    };
+
+    let recipe_version_tag = recipe_version_opt.as_deref().unwrap_or("");
+    tracing::info!(
+        monotonic_counter.goose.recipe_runs = 1,
+        recipe_name = %recipe_display_name,
+        recipe_version = %recipe_version_tag,
+        session_type = "schedule",
+        interface = "server",
+        "Recipe execution started"
+    );
 
     match scheduler.run_now(&id).await {
         Ok(session_id) => Ok(Json(RunNowResponse { session_id })),
-        Err(e) => {
-            eprintln!("Error running schedule '{}' now: {:?}", id, e);
-            match e {
-                goose::scheduler::SchedulerError::JobNotFound(_) => Err(StatusCode::NOT_FOUND),
-                goose::scheduler::SchedulerError::AnyhowError(ref err) => {
-                    // Check if this is a cancellation error
-                    if err.to_string().contains("was successfully cancelled") {
-                        // Return a special session_id to indicate cancellation
-                        Ok(Json(RunNowResponse {
-                            session_id: "CANCELLED".to_string(),
-                        }))
-                    } else {
-                        Err(StatusCode::INTERNAL_SERVER_ERROR)
-                    }
+        Err(e) => match e {
+            goose::scheduler::SchedulerError::JobNotFound(msg) => Err(ErrorResponse::not_found(
+                format!("Schedule not found: {}", msg),
+            )),
+            goose::scheduler::SchedulerError::AnyhowError(ref err) => {
+                // Check if this is a cancellation error
+                if err.to_string().contains("was successfully cancelled") {
+                    // Return a special session_id to indicate cancellation
+                    Ok(Json(RunNowResponse {
+                        session_id: "CANCELLED".to_string(),
+                    }))
+                } else {
+                    Err(ErrorResponse::internal(format!(
+                        "Error running schedule: {}",
+                        err
+                    )))
                 }
-                _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
             }
-        }
+            _ => Err(ErrorResponse::internal(format!(
+                "Error running schedule: {}",
+                e
+            ))),
+        },
     }
 }
 
@@ -272,49 +326,34 @@ async fn run_now_handler(
 #[axum::debug_handler]
 async fn sessions_handler(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,                    // Added this line
     Path(schedule_id_param): Path<String>, // Renamed to avoid confusion with session_id
     Query(query_params): Query<SessionsQuery>,
-) -> Result<Json<Vec<SessionDisplayInfo>>, StatusCode> {
-    verify_secret_key(&headers, &state)?; // Added this line
-    let scheduler = state
-        .scheduler()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<Vec<SessionDisplayInfo>>, ErrorResponse> {
+    let scheduler = state.scheduler();
 
-    match scheduler
-        .sessions(&schedule_id_param, query_params.limit as usize)
+    let session_tuples = scheduler
+        .sessions(&schedule_id_param, query_params.limit)
         .await
-    {
-        Ok(session_tuples) => {
-            // Expecting Vec<(String, goose::session::storage::SessionMetadata)>
-            let display_infos: Vec<SessionDisplayInfo> = session_tuples
-                .into_iter()
-                .map(|(session_name, metadata)| SessionDisplayInfo {
-                    id: session_name.clone(),
-                    name: metadata.description, // Use description as name
-                    created_at: parse_session_name_to_iso(&session_name),
-                    working_dir: metadata.working_dir.to_string_lossy().into_owned(),
-                    schedule_id: metadata.schedule_id, // This is the ID of the schedule itself
-                    message_count: metadata.message_count,
-                    total_tokens: metadata.total_tokens,
-                    input_tokens: metadata.input_tokens,
-                    output_tokens: metadata.output_tokens,
-                    accumulated_total_tokens: metadata.accumulated_total_tokens,
-                    accumulated_input_tokens: metadata.accumulated_input_tokens,
-                    accumulated_output_tokens: metadata.accumulated_output_tokens,
-                })
-                .collect();
-            Ok(Json(display_infos))
-        }
-        Err(e) => {
-            eprintln!(
-                "Error fetching sessions for schedule '{}': {:?}",
-                schedule_id_param, e
-            );
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        .map_err(|e| ErrorResponse::internal(format!("Error fetching sessions: {}", e)))?;
+
+    let mut display_infos = Vec::new();
+    for (session_name, session) in session_tuples {
+        display_infos.push(SessionDisplayInfo {
+            id: session_name.clone(),
+            name: session.name,
+            created_at: session.created_at.to_rfc3339(),
+            working_dir: session.working_dir.to_string_lossy().into_owned(),
+            schedule_id: session.schedule_id,
+            message_count: session.message_count,
+            total_tokens: session.total_tokens,
+            input_tokens: session.input_tokens,
+            output_tokens: session.output_tokens,
+            accumulated_total_tokens: session.accumulated_total_tokens,
+            accumulated_input_tokens: session.accumulated_input_tokens,
+            accumulated_output_tokens: session.accumulated_output_tokens,
+        });
     }
+    Ok(Json(display_infos))
 }
 
 #[utoipa::path(
@@ -334,22 +373,18 @@ async fn sessions_handler(
 #[axum::debug_handler]
 async fn pause_schedule(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
-    verify_secret_key(&headers, &state)?;
-    let scheduler = state
-        .scheduler()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<StatusCode, ErrorResponse> {
+    let scheduler = state.scheduler();
 
-    scheduler.pause_schedule(&id).await.map_err(|e| {
-        eprintln!("Error pausing schedule '{}': {:?}", id, e);
-        match e {
-            goose::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-            goose::scheduler::SchedulerError::AnyhowError(_) => StatusCode::BAD_REQUEST,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+    scheduler.pause_schedule(&id).await.map_err(|e| match e {
+        goose::scheduler::SchedulerError::JobNotFound(msg) => {
+            ErrorResponse::not_found(format!("Schedule not found: {}", msg))
         }
+        goose::scheduler::SchedulerError::AnyhowError(err) => {
+            ErrorResponse::bad_request(format!("Cannot pause schedule: {}", err))
+        }
+        _ => ErrorResponse::internal(format!("Error pausing schedule: {}", e)),
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -370,21 +405,15 @@ async fn pause_schedule(
 #[axum::debug_handler]
 async fn unpause_schedule(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
-    verify_secret_key(&headers, &state)?;
-    let scheduler = state
-        .scheduler()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<StatusCode, ErrorResponse> {
+    let scheduler = state.scheduler();
 
-    scheduler.unpause_schedule(&id).await.map_err(|e| {
-        eprintln!("Error unpausing schedule '{}': {:?}", id, e);
-        match e {
-            goose::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+    scheduler.unpause_schedule(&id).await.map_err(|e| match e {
+        goose::scheduler::SchedulerError::JobNotFound(msg) => {
+            ErrorResponse::not_found(format!("Schedule not found: {}", msg))
         }
+        _ => ErrorResponse::internal(format!("Error unpausing schedule: {}", e)),
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -407,38 +436,32 @@ async fn unpause_schedule(
 #[axum::debug_handler]
 async fn update_schedule(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<UpdateScheduleRequest>,
-) -> Result<Json<ScheduledJob>, StatusCode> {
-    verify_secret_key(&headers, &state)?;
-    let scheduler = state
-        .scheduler()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<ScheduledJob>, ErrorResponse> {
+    let scheduler = state.scheduler();
 
     scheduler
         .update_schedule(&id, req.cron)
         .await
-        .map_err(|e| {
-            eprintln!("Error updating schedule '{}': {:?}", id, e);
-            match e {
-                goose::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-                goose::scheduler::SchedulerError::AnyhowError(_) => StatusCode::BAD_REQUEST,
-                goose::scheduler::SchedulerError::CronParseError(_) => StatusCode::BAD_REQUEST,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
+        .map_err(|e| match e {
+            goose::scheduler::SchedulerError::JobNotFound(msg) => {
+                ErrorResponse::not_found(format!("Schedule not found: {}", msg))
             }
+            goose::scheduler::SchedulerError::AnyhowError(err) => {
+                ErrorResponse::bad_request(format!("Cannot update schedule: {}", err))
+            }
+            goose::scheduler::SchedulerError::CronParseError(msg) => {
+                ErrorResponse::bad_request(format!("Invalid cron expression: {}", msg))
+            }
+            _ => ErrorResponse::internal(format!("Error updating schedule: {}", e)),
         })?;
 
-    // Return the updated schedule
-    let jobs = scheduler.list_scheduled_jobs().await.map_err(|e| {
-        eprintln!("Error listing schedules after update: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let jobs = scheduler.list_scheduled_jobs().await;
     let updated_job = jobs
         .into_iter()
         .find(|job| job.id == id)
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        .ok_or_else(|| ErrorResponse::internal("Schedule not found after update"))?;
 
     Ok(Json(updated_job))
 }
@@ -454,22 +477,18 @@ async fn update_schedule(
 #[axum::debug_handler]
 pub async fn kill_running_job(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<KillJobResponse>, StatusCode> {
-    verify_secret_key(&headers, &state)?;
-    let scheduler = state
-        .scheduler()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<KillJobResponse>, ErrorResponse> {
+    let scheduler = state.scheduler();
 
-    scheduler.kill_running_job(&id).await.map_err(|e| {
-        eprintln!("Error killing running job '{}': {:?}", id, e);
-        match e {
-            goose::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-            goose::scheduler::SchedulerError::AnyhowError(_) => StatusCode::BAD_REQUEST,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+    scheduler.kill_running_job(&id).await.map_err(|e| match e {
+        goose::scheduler::SchedulerError::JobNotFound(msg) => {
+            ErrorResponse::not_found(format!("Job not found: {}", msg))
         }
+        goose::scheduler::SchedulerError::AnyhowError(err) => {
+            ErrorResponse::bad_request(format!("Cannot kill job: {}", err))
+        }
+        _ => ErrorResponse::internal(format!("Error killing job: {}", e)),
     })?;
 
     Ok(Json(KillJobResponse {
@@ -493,39 +512,33 @@ pub async fn kill_running_job(
 #[axum::debug_handler]
 pub async fn inspect_running_job(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<InspectJobResponse>, StatusCode> {
-    verify_secret_key(&headers, &state)?;
-    let scheduler = state
-        .scheduler()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<InspectJobResponse>, ErrorResponse> {
+    let scheduler = state.scheduler();
 
-    match scheduler.get_running_job_info(&id).await {
-        Ok(info) => {
-            if let Some((session_id, start_time)) = info {
-                let duration = chrono::Utc::now().signed_duration_since(start_time);
-                Ok(Json(InspectJobResponse {
-                    session_id: Some(session_id),
-                    process_start_time: Some(start_time.to_rfc3339()),
-                    running_duration_seconds: Some(duration.num_seconds()),
-                }))
-            } else {
-                Ok(Json(InspectJobResponse {
-                    session_id: None,
-                    process_start_time: None,
-                    running_duration_seconds: None,
-                }))
+    let info = scheduler
+        .get_running_job_info(&id)
+        .await
+        .map_err(|e| match e {
+            goose::scheduler::SchedulerError::JobNotFound(msg) => {
+                ErrorResponse::not_found(format!("Job not found: {}", msg))
             }
-        }
-        Err(e) => {
-            eprintln!("Error inspecting running job '{}': {:?}", id, e);
-            match e {
-                goose::scheduler::SchedulerError::JobNotFound(_) => Err(StatusCode::NOT_FOUND),
-                _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
-            }
-        }
+            _ => ErrorResponse::internal(format!("Error inspecting job: {}", e)),
+        })?;
+
+    if let Some((session_id, start_time)) = info {
+        let duration = chrono::Utc::now().signed_duration_since(start_time);
+        Ok(Json(InspectJobResponse {
+            session_id: Some(session_id),
+            process_start_time: Some(start_time.to_rfc3339()),
+            running_duration_seconds: Some(duration.num_seconds()),
+        }))
+    } else {
+        Ok(Json(InspectJobResponse {
+            session_id: None,
+            process_start_time: None,
+            running_duration_seconds: None,
+        }))
     }
 }
 

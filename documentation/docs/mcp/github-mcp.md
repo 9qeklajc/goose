@@ -1,69 +1,71 @@
 ---
 title: GitHub Extension
-description: Add GitHub MCP Server as a Goose Extension
+description: Add GitHub MCP Server as a goose Extension
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import YouTubeShortEmbed from '@site/src/components/YouTubeShortEmbed';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
+import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
 
 <YouTubeShortEmbed videoUrl="https://www.youtube.com/embed/TbmQDv3SQOE" />
 
-This tutorial covers how to add the [GitHub MCP Server](https://github.com/modelcontextprotocol/servers/tree/main/src/github) as a Goose extension to enable file operations, repository management, search functionality, and more.
+This tutorial covers how to add the [GitHub MCP Server](https://github.com/github/github-mcp-server) as a goose extension to enable file operations, repository management, search functionality, and more.
 
-:::tip TLDR
+:::tip Quick Install
 <Tabs groupId="interface">
-  <TabItem value="ui" label="Goose Desktop" default>
-  [Launch the installer](goose://extension?cmd=npx&arg=-y&arg=%40modelcontextprotocol%2Fserver-github&id=github&name=GitHub&description=GitHub%20API&env=GITHUB_PERSONAL_ACCESS_TOKEN%3DGitHub%20Personal%20Access%20Token)
+  <TabItem value="ui" label="goose Desktop" default>
+   [Launch the installer](goose://extension?type=streamable_http&url=https%3A%2F%2Fapi.githubcopilot.com%2Fmcp%2F&id=github&name=GitHub&description=GitHub%20repository%20management%20and%20operations&header=Authorization%3DBearer%20YOUR_GITHUB_PERSONAL_ACCESS_TOKEN)
   </TabItem>
-  <TabItem value="cli" label="Goose CLI">
-  **Command**
-  ```sh
-  npx -y @modelcontextprotocol/server-github
+  <TabItem value="cli" label="goose CLI">
+  Add a `Remote Extension (Streaming HTTP)` extension type with:
+
+  **Endpoint URL**
+  ```
+  https://api.githubcopilot.com/mcp/
   ```
   </TabItem>
 </Tabs>
 
-  **Environment Variable**
+  **Custom Request Header**
   ```
-  GITHUB_PERSONAL_ACCESS_TOKEN: <YOUR_TOKEN>
+  Authorization: Bearer <YOUR_GITHUB_PERSONAL_ACCESS_TOKEN>
   ```
 :::
 
 ## Configuration
-
-:::info
-Note that you'll need [Node.js](https://nodejs.org/) installed on your system to run this command, as it uses `npx`.
-:::
+These steps configure the Remote MCP Server. For other deployment options, see the [official GitHub MCP Server documentation](https://github.com/github/github-mcp-server).
 
 <Tabs groupId="interface">
-  <TabItem value="ui" label="Goose Desktop" default>
-  1. [Launch the installer](goose://extension?cmd=npx&arg=-y&arg=%40modelcontextprotocol%2Fserver-github&id=github&name=GitHub&description=GitHub%20API&env=GITHUB_PERSONAL_ACCESS_TOKEN%3DGitHub%20Personal%20Access%20Token)
-  2. Press `Yes` to confirm the installation
-  3. Obtain a [GitHub Personal Access Token](https://github.com/settings/personal-access-tokens) and paste it in
-  4. Click `Save Configuration`
-  5. Scroll to the top and click `Exit` from the upper left corner
-  </TabItem>
-  <TabItem value="cli" label="Goose CLI">
+  <TabItem value="ui" label="goose Desktop" default>
+    <GooseDesktopInstaller
+      extensionId="github"
+      extensionName="GitHub"
+      description="GitHub repository management and operations"
+      type="http"
+      url="https://api.githubcopilot.com/mcp/"
+      envVars={[
+        { name: "Authorization", label: "Bearer YOUR_GITHUB_PERSONAL_ACCESS_TOKEN" }
+      ]}
+      apiKeyLink="https://github.com/settings/personal-access-tokens"
+      apiKeyLinkText="GitHub Personal Access Token"
+    />
 
+  </TabItem>
+  <TabItem value="cli" label="goose CLI">
     <CLIExtensionInstructions
       name="github"
-      command="npx -y @modelcontextprotocol/server-github"
+      description="GitHub repository management and operations"
+      type="http"
+      url="https://api.githubcopilot.com/mcp/"
       timeout={300}
       envVars={[
-        { key: "GITHUB_TOKEN", value: "••••••••••••••••" }
+        { key: "Authorization", value: "Bearer ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
       ]}
       infoNote={
         <>
-          When creating your access token, you can specify the repositories and granular permissions you'd like Goose to have access to.{" "}
-          <a
-            href="https://github.com/settings/personal-access-tokens"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Create one here
-          </a>.
+          Obtain your <a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener noreferrer">GitHub Personal Access Token</a> and paste it in as the <code>Bearer</code> token.
         </>
       }
     />
@@ -78,12 +80,12 @@ When creating my [GitHub Personal Access Token](https://github.com/settings/pers
 * Read access to metadata
 * Read and Write access to code, commit status, issues, and pull requests
 
-### Goose Prompt
+### goose Prompt
 ```
 create a new branch called hello-world in my angiejones/goose-demo repository. Update the README.md file to say "this was written by goose" and commit it. Open a pull request with your changes.
 ```
 
-### Goose Output
+### goose Output
 
 ```
 I'll help you create a new branch, update the README, and open a pull request. Let me break this down into steps:
@@ -106,7 +108,7 @@ repo: goose-demo
 ─── create_or_update_file | github ──────────────────────────
 branch: hello-world
 content: this was written by goose
-message: Update README.md with Goose message
+message: Update README.md with goose message
 owner: angiejones
 path: README.md
 repo: goose-demo

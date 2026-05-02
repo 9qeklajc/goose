@@ -9,7 +9,9 @@ import {
   runNowHandler as apiRunScheduleNow,
   killRunningJob as apiKillRunningJob,
   inspectRunningJob as apiInspectRunningJob,
+  SessionDisplayInfo,
 } from './api';
+import type { Recipe } from './api';
 
 export interface ScheduledJob {
   id: string;
@@ -20,7 +22,6 @@ export interface ScheduledJob {
   paused?: boolean;
   current_session_id?: string | null;
   process_start_time?: string | null;
-  execution_mode?: string | null; // "foreground" or "background"
 }
 
 export interface ScheduleSession {
@@ -54,21 +55,15 @@ export async function listSchedules(): Promise<ScheduledJob[]> {
 
 export async function createSchedule(request: {
   id: string;
-  recipe_source: string;
+  recipe: Recipe;
   cron: string;
-  execution_mode?: string;
 }): Promise<ScheduledJob> {
-  try {
-    const response = await apiCreateSchedule<true>({ body: request });
-    if (response && response.data) {
-      return response.data as ScheduledJob;
-    }
-    console.error('Unexpected response format from apiCreateSchedule', response);
-    throw new Error('Failed to create schedule: Unexpected response format');
-  } catch (error) {
-    console.error('Error creating schedule:', error);
-    throw error;
+  const response = await apiCreateSchedule({ body: request });
+  if (response.data) {
+    return response.data as ScheduledJob;
   }
+  const err = response.error as { message?: string } | undefined;
+  throw new Error(err?.message || 'Failed to create schedule');
 }
 
 export async function deleteSchedule(id: string): Promise<void> {
@@ -82,23 +77,15 @@ export async function deleteSchedule(id: string): Promise<void> {
 
 export async function getScheduleSessions(
   scheduleId: string,
-  limit?: number
-): Promise<ScheduleSession[]> {
-  try {
-    const response = await apiGetScheduleSessions<true>({
-      path: { id: scheduleId },
-      query: { limit },
-    });
+  limit: number
+): Promise<Array<SessionDisplayInfo>> {
+  const response = await apiGetScheduleSessions<true>({
+    path: { id: scheduleId },
+    query: { limit },
+    throwOnError: true,
+  });
 
-    if (response && response.data) {
-      return response.data as ScheduleSession[];
-    }
-    console.error('Unexpected response format from apiGetScheduleSessions', response);
-    throw new Error('Failed to get schedule sessions: Unexpected response format');
-  } catch (error) {
-    console.error(`Error fetching sessions for schedule ${scheduleId}:`, error);
-    throw error;
-  }
+  return response.data;
 }
 
 export async function runScheduleNow(scheduleId: string): Promise<string> {

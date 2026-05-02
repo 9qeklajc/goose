@@ -1,3 +1,4 @@
+import { AppEvents } from '../../../constants/events';
 import { useEffect, useState } from 'react';
 import { all_response_styles, ResponseStyleSelectionItem } from './ResponseStyleSelectionItem';
 
@@ -5,46 +6,40 @@ export const ResponseStylesSection = () => {
   const [currentStyle, setCurrentStyle] = useState('concise');
 
   useEffect(() => {
-    const savedStyle = localStorage.getItem('response_style');
-    if (savedStyle) {
+    async function loadResponseStyle() {
       try {
+        const savedStyle = await window.electron.getSetting('responseStyle');
         setCurrentStyle(savedStyle);
       } catch (error) {
-        console.error('Error parsing response style:', error);
+        console.error('Error loading response style:', error);
       }
-    } else {
-      // Set default to concise for new users
-      localStorage.setItem('response_style', 'concise');
-      setCurrentStyle('concise');
     }
+    loadResponseStyle();
   }, []);
 
   const handleStyleChange = async (newStyle: string) => {
     setCurrentStyle(newStyle);
-    localStorage.setItem('response_style', newStyle);
+    try {
+      await window.electron.setSetting('responseStyle', newStyle);
+    } catch (error) {
+      console.error('Error saving response style:', error);
+    }
+
+    // Dispatch custom event to notify other components of the change
+    window.dispatchEvent(new CustomEvent(AppEvents.RESPONSE_STYLE_CHANGED));
   };
 
   return (
-    <section id="responseStyles" className="px-8">
-      <div className="flex justify-between items-center mb-2">
-        <h2 className="text-xl font-medium text-textStandard">Response Styles</h2>
-      </div>
-      <div className="border-b border-borderSubtle pb-8">
-        <p className="text-sm text-textStandard mb-6">
-          Choose how Goose should format and style its responses
-        </p>
-        <div>
-          {all_response_styles.map((style) => (
-            <ResponseStyleSelectionItem
-              key={style.key}
-              style={style}
-              currentStyle={currentStyle}
-              showDescription={true}
-              handleStyleChange={handleStyleChange}
-            />
-          ))}
-        </div>
-      </div>
-    </section>
+    <div className="space-y-1">
+      {all_response_styles.map((style) => (
+        <ResponseStyleSelectionItem
+          key={style.key}
+          style={style}
+          currentStyle={currentStyle}
+          showDescription={true}
+          handleStyleChange={handleStyleChange}
+        />
+      ))}
+    </div>
   );
 };

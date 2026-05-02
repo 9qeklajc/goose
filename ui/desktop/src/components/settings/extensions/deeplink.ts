@@ -1,6 +1,5 @@
 import type { ExtensionConfig } from '../../../api';
 import { toastService } from '../../../toasts';
-import { activateExtension } from './extension-manager';
 import { DEFAULT_EXTENSION_TIMEOUT } from './utils';
 
 /**
@@ -14,7 +13,16 @@ function getStdioConfig(
   timeout: number
 ) {
   // Validate that the command is one of the allowed commands
-  const allowedCommands = ['docker', 'jbang', 'npx', 'uvx', 'goosed'];
+  const allowedCommands = [
+    'cu',
+    'docker',
+    'jbang',
+    'npx',
+    'uvx',
+    'goosed',
+    'npx.cmd',
+    'i-ching-mcp-server',
+  ];
   if (!allowedCommands.includes(cmd)) {
     toastService.handleError(
       'Invalid Command',
@@ -35,7 +43,6 @@ function getStdioConfig(
 
   const envList = parsedUrl.searchParams.getAll('env');
 
-  // Create the extension config
   const config: ExtensionConfig = {
     name: name,
     type: 'stdio',
@@ -58,15 +65,24 @@ function getStdioConfig(
 }
 
 /**
- * Build an extension config for SSE from the deeplink URL
+ * Build an extension config for Streamable HTTP from the deeplink URL
  */
-function getSseConfig(remoteUrl: string, name: string, description: string, timeout: number) {
+function getStreamableHttpConfig(
+  remoteUrl: string,
+  name: string,
+  description: string,
+  timeout: number,
+  headers?: { [key: string]: string },
+  envs?: { [key: string]: string }
+) {
   const config: ExtensionConfig = {
     name,
-    type: 'sse',
+    type: 'streamable_http',
     uri: remoteUrl,
     description,
     timeout: timeout,
+    headers: headers,
+    envs: envs,
   };
 
   return config;
@@ -84,9 +100,7 @@ export async function addExtensionFromDeepLink(
   ) => Promise<void>,
   setView: (
     view: string,
-    options:
-      | { extensionId: string; showEnvVars: boolean }
-      | { deepLinkConfig: ExtensionConfig; showEnvVars: boolean }
+    options: { showEnvVars: boolean; deepLinkConfig?: ExtensionConfig }
   ) => void
 ) {
   const parsedUrl = new URL(url);
@@ -117,26 +131,63 @@ export async function addExtensionFromDeepLink(
   const parsedTimeout = parsedUrl.searchParams.get('timeout');
   const timeout = parsedTimeout ? parseInt(parsedTimeout, 10) : DEFAULT_EXTENSION_TIMEOUT;
   const description = parsedUrl.searchParams.get('description');
+  const installation_notes = parsedUrl.searchParams.get('installation_notes');
 
   const cmd = parsedUrl.searchParams.get('cmd');
   const remoteUrl = parsedUrl.searchParams.get('url');
 
-  const config = remoteUrl
-    ? getSseConfig(remoteUrl, name, description || '', timeout)
+  const headerParams = parsedUrl.searchParams.getAll('header');
+  const headers =
+    headerParams.length > 0
+      ? Object.fromEntries(
+          headerParams.map((header) => {
+            const [key, ...rest] = header.split('=');
+            return [key, decodeURIComponent(rest.join('=') || '')];
+          })
+        )
+      : undefined;
+
+  // Parse env vars for remote extensions (same logic as stdio)
+  const envList = parsedUrl.searchParams.getAll('env');
+  const envs =
+    envList.length > 0
+      ? Object.fromEntries(
+          envList.map((env) => {
+            const [key] = env.split('=');
+            return [key, ''];
+          })
+        )
+      : undefined;
+
+  const baseConfig = remoteUrl
+    ? getStreamableHttpConfig(remoteUrl, name, description || '', timeout, headers, envs)
     : getStdioConfig(cmd!, parsedUrl, name, description || '', timeout);
 
-  // Check if extension requires env vars and go to settings if so
-  if (config.envs && Object.keys(config.envs).length > 0) {
-    console.log('Environment variables required, redirecting to settings');
-    setView('settings', { deepLinkConfig: config, showEnvVars: true });
+  const config = {
+    ...baseConfig,
+    ...(installation_notes ? { installation_notes } : {}),
+  };
+
+  // Check if extension requires env vars or headers and go to settings if so
+  const hasEnvVars = config.envs && Object.keys(config.envs).length > 0;
+  const hasHeaders =
+    config.type === 'streamable_http' && config.headers && Object.keys(config.headers).length > 0;
+
+  if (hasEnvVars || hasHeaders) {
+    setView('extensions', { deepLinkConfig: config, showEnvVars: true });
     return;
   }
 
-  // If no env vars are required, proceed with adding the extension
-  try {
-    await activateExtension({ extensionConfig: config, addToConfig: addExtensionFn });
-  } catch (error) {
-    console.error('Failed to activate extension from deeplink:', error);
-    throw error;
-  }
+  // Note: deeplink activation doesn't have access to sessionId, so the extension
+  // is saved for on-demand use instead of being globally enabled.
+  await addExtensionFn(config.name, config, false);
+
+  // Show success toast and navigate to extensions page
+  toastService.success({
+    title: 'Extension Installed',
+    msg: `${config.name} extension has been installed successfully and is available on demand.`,
+  });
+
+  // Navigate to extensions page to show the newly installed extension
+  setView('extensions', { deepLinkConfig: config, showEnvVars: false });
 }

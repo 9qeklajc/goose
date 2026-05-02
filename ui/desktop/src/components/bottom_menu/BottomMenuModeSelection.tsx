@@ -1,68 +1,55 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
+import { Tornado } from 'lucide-react';
 import { all_goose_modes, ModeSelectionItem } from '../settings/mode/ModeSelectionItem';
 import { useConfig } from '../ConfigContext';
-import { View, ViewOptions } from '../../App';
-import { Orbit } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
+import { trackModeChanged } from '../../utils/analytics';
+import { getSession, updateSession } from '../../api';
+import { defineMessages, useIntl } from '../../i18n';
 
-interface BottomMenuModeSelectionProps {
-  setView: (view: View, viewOptions?: ViewOptions) => void;
-}
+const i18n = defineMessages({
+  autoFallback: {
+    id: 'bottomMenuModeSelection.autoFallback',
+    defaultMessage: 'auto',
+  },
+  automaticModeDescription: {
+    id: 'bottomMenuModeSelection.automaticModeDescription',
+    defaultMessage: 'Automatic mode selection',
+  },
+  currentModeTitle: {
+    id: 'bottomMenuModeSelection.currentModeTitle',
+    defaultMessage: 'Current mode: {label} - {description}',
+  },
+});
 
-export const BottomMenuModeSelection = ({ setView }: BottomMenuModeSelectionProps) => {
-  const [isGooseModeMenuOpen, setIsGooseModeMenuOpen] = useState(false);
+export const BottomMenuModeSelection = ({ sessionId }: { sessionId: string | null }) => {
+  const intl = useIntl();
   const [gooseMode, setGooseMode] = useState('auto');
-  const gooseModeDropdownRef = useRef<HTMLDivElement>(null);
-  const { read, upsert } = useConfig();
+  const { config } = useConfig();
 
-  const fetchCurrentMode = useCallback(async () => {
-    try {
-      const mode = (await read('GOOSE_MODE', false)) as string;
+  useEffect(() => {
+    let cancelled = false;
+    if (sessionId) {
+      getSession({ path: { session_id: sessionId } }).then((res) => {
+        if (!cancelled && res.data?.goose_mode) {
+          setGooseMode(res.data.goose_mode);
+        }
+      });
+    } else {
+      const mode = config.GOOSE_MODE as string | undefined;
       if (mode) {
         setGooseMode(mode);
       }
-    } catch (error) {
-      console.error('Error fetching current mode:', error);
     }
-  }, [read]);
-
-  useEffect(() => {
-    fetchCurrentMode();
-  }, [fetchCurrentMode]);
-
-  useEffect(() => {
-    const handleEsc = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setIsGooseModeMenuOpen(false);
-      }
-    };
-
-    if (isGooseModeMenuOpen) {
-      window.addEventListener('keydown', handleEsc);
-    }
-
     return () => {
-      window.removeEventListener('keydown', handleEsc);
+      cancelled = true;
     };
-  }, [isGooseModeMenuOpen]);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        gooseModeDropdownRef.current &&
-        !gooseModeDropdownRef.current.contains(event.target as Node)
-      ) {
-        setIsGooseModeMenuOpen(false);
-      }
-    };
-
-    if (isGooseModeMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isGooseModeMenuOpen]);
+  }, [sessionId, config.GOOSE_MODE]);
 
   const handleModeChange = async (newMode: string) => {
     if (gooseMode === newMode) {
@@ -70,48 +57,52 @@ export const BottomMenuModeSelection = ({ setView }: BottomMenuModeSelectionProp
     }
 
     try {
-      await upsert('GOOSE_MODE', newMode, false);
+      if (sessionId) {
+        await updateSession({ body: { session_id: sessionId, goose_mode: newMode } });
+      }
       setGooseMode(newMode);
+      trackModeChanged(gooseMode, newMode);
     } catch (error) {
       console.error('Error updating goose mode:', error);
       throw new Error(`Failed to store new goose mode: ${newMode}`);
     }
   };
 
-  function getValueByKey(key: string) {
+  function getValueByKey(key: string): string {
     const mode = all_goose_modes.find((mode) => mode.key === key);
-    return mode ? mode.label : 'auto';
+    if (!mode) return intl.formatMessage(i18n.autoFallback);
+    return intl.formatMessage(mode.labelDescriptor);
+  }
+
+  function getModeDescription(key: string): string {
+    const mode = all_goose_modes.find((mode) => mode.key === key);
+    if (!mode) return intl.formatMessage(i18n.automaticModeDescription);
+    return intl.formatMessage(mode.descriptionDescriptor);
   }
 
   return (
-    <div className="relative flex items-center" ref={gooseModeDropdownRef}>
-      <button
-        className="flex items-center justify-center text-textSubtle hover:text-textStandard h-6 [&_svg]:size-4"
-        onClick={() => setIsGooseModeMenuOpen(!isGooseModeMenuOpen)}
-      >
-        <span className="pr-1.5">{getValueByKey(gooseMode).toLowerCase()}</span>
-        <Orbit />
-      </button>
-
-      {/* Dropdown Menu */}
-      {isGooseModeMenuOpen && (
-        <div className="absolute bottom-[24px] right-0 w-[240px] py-2 bg-bgApp rounded-lg border border-borderSubtle">
-          <div>
-            {all_goose_modes.map((mode) => (
+    <div title={intl.formatMessage(i18n.currentModeTitle, { label: getValueByKey(gooseMode), description: getModeDescription(gooseMode) })}>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <span className="flex items-center cursor-pointer [&_svg]:size-4 text-text-primary/70 hover:text-text-primary hover:scale-100 hover:bg-transparent text-xs">
+            <Tornado className="mr-1 h-4 w-4" />
+            {getValueByKey(gooseMode).toLowerCase()}
+          </span>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="w-64" side="top" align="center">
+          {all_goose_modes.map((mode) => (
+            <DropdownMenuItem key={mode.key} asChild>
               <ModeSelectionItem
-                key={mode.key}
                 mode={mode}
                 currentMode={gooseMode}
                 showDescription={false}
                 isApproveModeConfigure={false}
-                parentView="chat"
-                setView={setView}
                 handleModeChange={handleModeChange}
               />
-            ))}
-          </div>
-        </div>
-      )}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 };

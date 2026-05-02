@@ -9,32 +9,207 @@ import {
   Check,
   Target,
   LoaderCircle,
+  AlertCircle,
 } from 'lucide-react';
-import { type SessionDetails } from '../../sessions';
-import { SessionHeaderCard, SessionMessages } from './SessionViewComponents';
-import { formatMessageTimestamp } from '../../utils/timeUtils';
-import { createSharedSession } from '../../sharedSessions';
-import { Modal, ModalContent } from '../ui/modal';
+import { defineMessages, useIntl } from '../../i18n';
+import { resumeSession } from '../../sessions';
 import { Button } from '../ui/button';
 import { toast } from 'react-toastify';
-import MoreMenuLayout from '../more_menu/MoreMenuLayout';
+import { MainPanelLayout } from '../Layout/MainPanelLayout';
+import { ScrollArea } from '../ui/scroll-area';
+import { formatMessageTimestamp } from '../../utils/timeUtils';
+import { createSharedSession } from '../../sharedSessions';
+import { errorMessage } from '../../utils/conversionUtils';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog';
+import ProgressiveMessageList from '../ProgressiveMessageList';
+import { SearchView } from '../conversation/SearchView';
+import BackButton from '../ui/BackButton';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { Message, Session } from '../../api';
+import { useNavigation } from '../../hooks/useNavigation';
+
+const i18n = defineMessages({
+  errorLoadingDetails: {
+    id: 'sessionHistory.error.loading',
+    defaultMessage: 'Error Loading Session Details',
+  },
+  tryAgain: {
+    id: 'sessionHistory.error.tryAgain',
+    defaultMessage: 'Try Again',
+  },
+  searchPlaceholder: {
+    id: 'sessionHistory.searchPlaceholder',
+    defaultMessage: 'Search history...',
+  },
+  noMessages: {
+    id: 'sessionHistory.empty.title',
+    defaultMessage: 'No messages found',
+  },
+  noMessagesDesc: {
+    id: 'sessionHistory.empty.description',
+    defaultMessage: "This session doesn't contain any messages",
+  },
+  loadingDetails: {
+    id: 'sessionHistory.loading',
+    defaultMessage: 'Loading session details...',
+  },
+  sharing: {
+    id: 'sessionHistory.sharing',
+    defaultMessage: 'Sharing...',
+  },
+  share: {
+    id: 'sessionHistory.share',
+    defaultMessage: 'Share',
+  },
+  shareTooltip: {
+    id: 'sessionHistory.shareTooltip',
+    defaultMessage: 'To enable session sharing, go to <b>Settings</b> > <b>Session</b> > <b>Session Sharing</b>.',
+  },
+  resume: {
+    id: 'sessionHistory.resume',
+    defaultMessage: 'Resume',
+  },
+  shareSessionTitle: {
+    id: 'sessionHistory.shareModal.title',
+    defaultMessage: 'Share Session (beta)',
+  },
+  shareSessionDescription: {
+    id: 'sessionHistory.shareModal.description',
+    defaultMessage: 'Share this session link to give others a read only view of your goose chat.',
+  },
+  copy: {
+    id: 'sessionHistory.copy',
+    defaultMessage: 'Copy',
+  },
+  cancel: {
+    id: 'sessionHistory.cancel',
+    defaultMessage: 'Cancel',
+  },
+  failedToShare: {
+    id: 'sessionHistory.toast.shareFailed',
+    defaultMessage: 'Failed to share session: {error}',
+  },
+  failedToCopy: {
+    id: 'sessionHistory.toast.copyFailed',
+    defaultMessage: 'Failed to copy link to clipboard',
+  },
+  couldNotLaunch: {
+    id: 'sessionHistory.toast.launchFailed',
+    defaultMessage: 'Could not launch session: {error}',
+  },
+});
+
+const isUserMessage = (message: Message): boolean => {
+  if (message.role === 'assistant') {
+    return false;
+  }
+  return !message.content.every(
+    (c) => c.type === 'actionRequired' && c.data.actionType === 'toolConfirmation'
+  );
+};
+
+const filterMessagesForDisplay = (messages: Message[]): Message[] => {
+  return messages;
+};
 
 interface SessionHistoryViewProps {
-  session: SessionDetails;
+  session: Session;
   isLoading: boolean;
   error: string | null;
   onBack: () => void;
-  onResume: () => void;
   onRetry: () => void;
   showActionButtons?: boolean;
 }
+
+// Custom SessionHeader component similar to SessionListView style
+const SessionHeader: React.FC<{
+  onBack: () => void;
+  children: React.ReactNode;
+  title: string;
+  actionButtons?: React.ReactNode;
+}> = ({ onBack, children, title, actionButtons }) => {
+  return (
+    <div className="flex flex-col pb-8 border-b">
+      <div className="flex items-center pt-0 mb-1">
+        <BackButton onClick={onBack} />
+      </div>
+      <h1 className="text-4xl font-light mb-4 pt-6">{title}</h1>
+      <div className="flex items-center">{children}</div>
+      {actionButtons && <div className="flex items-center space-x-3 mt-4">{actionButtons}</div>}
+    </div>
+  );
+};
+
+const SessionMessages: React.FC<{
+  messages: Message[];
+  isLoading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}> = ({ messages, isLoading, error, onRetry }) => {
+  const intl = useIntl();
+  const filteredMessages = filterMessagesForDisplay(messages);
+
+  return (
+    <ScrollArea className="h-full w-full">
+      <div className="pb-24 pt-8">
+        <div className="flex flex-col space-y-6">
+          {isLoading ? (
+            <div className="flex justify-center items-center py-12">
+              <LoaderCircle className="animate-spin h-8 w-8 text-text-primary" />
+            </div>
+          ) : error ? (
+            <div className="flex flex-col items-center justify-center py-8 text-text-secondary">
+              <div className="text-red-500 mb-4">
+                <AlertCircle size={32} />
+              </div>
+              <p className="text-md mb-2">{intl.formatMessage(i18n.errorLoadingDetails)}</p>
+              <p className="text-sm text-center mb-4">{error}</p>
+              <Button onClick={onRetry} variant="default">
+                {intl.formatMessage(i18n.tryAgain)}
+              </Button>
+            </div>
+          ) : filteredMessages?.length > 0 ? (
+            <div className="max-w-4xl mx-auto w-full">
+              <SearchView placeholder={intl.formatMessage(i18n.searchPlaceholder)}>
+                <ProgressiveMessageList
+                  messages={filteredMessages}
+                  chat={{
+                    sessionId: 'session-preview',
+                  }}
+                  toolCallNotifications={new Map()}
+                  append={() => {}} // Read-only for session history
+                  isUserMessage={isUserMessage} // Use the same function as BaseChat
+                  batchSize={15} // Same as BaseChat default
+                  batchDelay={30} // Same as BaseChat default
+                  showLoadingThreshold={30} // Same as BaseChat default
+                />
+              </SearchView>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-8 text-text-secondary">
+              <MessageSquareText className="w-12 h-12 mb-4" />
+              <p className="text-lg mb-2">{intl.formatMessage(i18n.noMessages)}</p>
+              <p className="text-sm">{intl.formatMessage(i18n.noMessagesDesc)}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </ScrollArea>
+  );
+};
 
 const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   session,
   isLoading,
   error,
   onBack,
-  onResume,
   onRetry,
   showActionButtons = true,
 }) => {
@@ -44,40 +219,34 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   const [isCopied, setIsCopied] = useState(false);
   const [canShare, setCanShare] = useState(false);
 
+  const intl = useIntl();
+  const messages = session.conversation || [];
+
+  const setView = useNavigation();
+
   useEffect(() => {
-    const savedSessionConfig = localStorage.getItem('session_sharing_config');
-    if (savedSessionConfig) {
-      try {
-        const config = JSON.parse(savedSessionConfig);
-        if (config.enabled && config.baseUrl) {
-          setCanShare(true);
-        }
-      } catch (error) {
-        console.error('Error parsing session sharing config:', error);
+    window.electron.getSetting('sessionSharing').then((config) => {
+      if (config.enabled && config.baseUrl) {
+        setCanShare(true);
       }
-    }
+    });
   }, []);
 
   const handleShare = async () => {
     setIsSharing(true);
 
     try {
-      const savedSessionConfig = localStorage.getItem('session_sharing_config');
-      if (!savedSessionConfig) {
-        throw new Error('Session sharing is not configured. Please configure it in settings.');
-      }
-
-      const config = JSON.parse(savedSessionConfig);
+      const config = await window.electron.getSetting('sessionSharing');
       if (!config.enabled || !config.baseUrl) {
         throw new Error('Session sharing is not enabled or base URL is not configured.');
       }
 
       const shareToken = await createSharedSession(
         config.baseUrl,
-        session.metadata.working_dir,
-        session.messages,
-        session.metadata.description || 'Shared Session',
-        session.metadata.total_tokens
+        session.working_dir,
+        messages,
+        session.name || 'Shared Session',
+        session.total_tokens || 0
       );
 
       const shareableLink = `goose://sessions/${shareToken}`;
@@ -85,9 +254,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       setIsShareModalOpen(true);
     } catch (error) {
       console.error('Error sharing session:', error);
-      toast.error(
-        `Failed to share session: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+      toast.error(intl.formatMessage(i18n.failedToShare, { error: errorMessage(error, 'Unknown error') }));
     } finally {
       setIsSharing(false);
     }
@@ -102,130 +269,150 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       })
       .catch((err) => {
         console.error('Failed to copy link:', err);
-        toast.error('Failed to copy link to clipboard');
+        toast.error(intl.formatMessage(i18n.failedToCopy));
       });
   };
 
-  return (
-    <div className="h-screen w-full flex flex-col">
-      <MoreMenuLayout showMenu={false} />
+  const handleResumeSession = () => {
+    try {
+      resumeSession(session, setView);
+    } catch (error) {
+      toast.error(intl.formatMessage(i18n.couldNotLaunch, { error: errorMessage(error) }));
+    }
+  };
 
-      <SessionHeaderCard onBack={onBack}>
-        <div className="ml-8">
-          <h1 className="text-lg text-textStandardInverse">
-            {session.metadata.description || session.session_id}
-          </h1>
-          <div className="flex items-center text-sm text-textSubtle mt-1 space-x-5">
-            <span className="flex items-center">
-              <Calendar className="w-4 h-4 mr-1" />
-              {formatMessageTimestamp(session.messages[0]?.created)}
-            </span>
-            <span className="flex items-center">
-              <MessageSquareText className="w-4 h-4 mr-1" />
-              {session.metadata.message_count}
-            </span>
-            {session.metadata.total_tokens !== null && (
-              <span className="flex items-center">
-                <Target className="w-4 h-4 mr-1" />
-                {session.metadata.total_tokens.toLocaleString()}
-              </span>
+  const actionButtons = showActionButtons ? (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            onClick={handleShare}
+            disabled={!canShare || isSharing}
+            size="sm"
+            variant="outline"
+            className={canShare ? '' : 'cursor-not-allowed opacity-50'}
+          >
+            {isSharing ? (
+              <>
+                <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
+                {intl.formatMessage(i18n.sharing)}
+              </>
+            ) : (
+              <>
+                <Share2 className="w-4 h-4" />
+                {intl.formatMessage(i18n.share)}
+              </>
             )}
-          </div>
-          <div className="flex items-center text-sm text-textSubtle space-x-5">
-            <span className="flex items-center">
-              <Folder className="w-4 h-4 mr-1" />
-              {session.metadata.working_dir}
-            </span>
-          </div>
-        </div>
+          </Button>
+        </TooltipTrigger>
+        {!canShare ? (
+          <TooltipContent>
+            <p>
+              {intl.formatMessage(i18n.shareTooltip, {
+                b: (chunks: React.ReactNode) => <b>{chunks}</b>,
+              })}
+            </p>
+          </TooltipContent>
+        ) : null}
+      </Tooltip>
+      <Button onClick={handleResumeSession} size="sm" variant="outline">
+        <Sparkles className="w-4 h-4" />
+        {intl.formatMessage(i18n.resume)}
+      </Button>
+    </>
+  ) : null;
 
-        {showActionButtons && (
-          <div className="ml-auto flex items-center space-x-4">
-            <button
-              onClick={handleShare}
-              title="Share Session"
-              disabled={!canShare || isSharing}
-              className={`flex items-center text-textStandardInverse px-2 py-1 ${
-                canShare
-                  ? 'hover:font-bold hover:scale-110 transition-all duration-150'
-                  : 'cursor-not-allowed opacity-50'
-              }`}
-            >
-              {isSharing ? (
+  return (
+    <>
+      <MainPanelLayout>
+        <div className="flex-1 flex flex-col min-h-0 px-8">
+          <SessionHeader
+            onBack={onBack}
+            title={session.name}
+            actionButtons={!isLoading ? actionButtons : null}
+          >
+            <div className="flex flex-col">
+              {!isLoading ? (
                 <>
-                  <LoaderCircle className="w-7 h-7 animate-spin mr-2" />
-                  <span>Sharing...</span>
+                  <div className="flex items-center text-text-secondary text-sm space-x-5 font-mono">
+                    <span className="flex items-center">
+                      <Calendar className="w-4 h-4 mr-1" />
+                      {formatMessageTimestamp(messages[0]?.created)}
+                    </span>
+                    <span className="flex items-center">
+                      <MessageSquareText className="w-4 h-4 mr-1" />
+                      {session.message_count}
+                    </span>
+                    {session.total_tokens !== null && (
+                      <span className="flex items-center">
+                        <Target className="w-4 h-4 mr-1" />
+                        {(session.total_tokens || 0).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center text-text-secondary text-sm mt-1 font-mono">
+                    <span className="flex items-center">
+                      <Folder className="w-4 h-4 mr-1" />
+                      {session.working_dir}
+                    </span>
+                  </div>
                 </>
               ) : (
-                <>
-                  <Share2 className="w-7 h-7" />
-                </>
+                <div className="flex items-center text-text-secondary text-sm">
+                  <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
+                  <span>{intl.formatMessage(i18n.loadingDetails)}</span>
+                </div>
               )}
-            </button>
+            </div>
+          </SessionHeader>
 
-            <button
-              onClick={onResume}
-              title="Resume Session"
-              className="flex items-center text-textStandardInverse px-2 py-1 hover:font-bold hover:scale-110 transition-all duration-150"
-            >
-              <Sparkles className="w-7 h-7" />
-            </button>
-          </div>
-        )}
-      </SessionHeaderCard>
+          <SessionMessages
+            messages={messages}
+            isLoading={isLoading}
+            error={error}
+            onRetry={onRetry}
+          />
+        </div>
+      </MainPanelLayout>
 
-      <SessionMessages
-        messages={session.messages}
-        isLoading={isLoading}
-        error={error}
-        onRetry={onRetry}
-      />
+      <Dialog open={isShareModalOpen} onOpenChange={setIsShareModalOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex justify-center items-center gap-2">
+              <Share2 className="w-6 h-6 text-text-primary" />
+              {intl.formatMessage(i18n.shareSessionTitle)}
+            </DialogTitle>
+            <DialogDescription>
+              {intl.formatMessage(i18n.shareSessionDescription)}
+            </DialogDescription>
+          </DialogHeader>
 
-      <Modal open={isShareModalOpen} onOpenChange={setIsShareModalOpen}>
-        <ModalContent className="sm:max-w-md p-0 bg-bgApp dark:bg-bgApp dark:border-borderSubtle">
-          <div className="flex justify-center mt-4">
-            <Share2 className="w-6 h-6 text-textStandard" />
-          </div>
-
-          <div className="mt-2 px-6 text-center">
-            <h2 className="text-lg font-semibold text-textStandard">Share Session (beta)</h2>
-          </div>
-
-          <div className="px-6 flex flex-col gap-4 mt-2">
-            <p className="text-sm text-center text-textSubtle">
-              Share this session link to give others a read only view of your goose chat.
-            </p>
-
-            <div className="relative rounded-lg border border-borderSubtle px-3 py-2 flex items-center bg-gray-100 dark:bg-gray-600">
-              <code className="text-sm text-textStandard dark:text-textStandardInverse overflow-x-hidden break-all pr-8 w-full">
+          <div className="py-4">
+            <div className="relative rounded-full border border-border-primary px-3 py-2 flex items-center bg-gray-100 dark:bg-gray-600">
+              <code className="text-sm text-text-primary dark:text-text-inverse overflow-x-hidden break-all pr-8 w-full">
                 {shareLink}
               </code>
               <Button
-                size="icon"
+                shape="pill"
                 variant="ghost"
                 className="absolute right-2 top-1/2 -translate-y-1/2"
                 onClick={handleCopyLink}
                 disabled={isCopied}
               >
                 {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                <span className="sr-only">Copy</span>
+                <span className="sr-only">{intl.formatMessage(i18n.copy)}</span>
               </Button>
             </div>
           </div>
 
-          <div>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setIsShareModalOpen(false)}
-              className="w-full h-[60px] border-t rounded-b-lg dark:border-gray-600 text-lg text-textStandard hover:bg-gray-100 hover:dark:bg-gray-600"
-            >
-              Cancel
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsShareModalOpen(false)}>
+              {intl.formatMessage(i18n.cancel)}
             </Button>
-          </div>
-        </ModalContent>
-      </Modal>
-    </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 };
 

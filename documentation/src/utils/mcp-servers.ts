@@ -1,6 +1,6 @@
 import type { MCPServer } from "../types/server";
 
-const SERVERS_URL = "/goose/servers.json";
+const SERVERS_URL = "/servers.json";
 
 export async function fetchMCPServers(): Promise<MCPServer[]> {
   try {
@@ -9,7 +9,6 @@ export async function fetchMCPServers(): Promise<MCPServer[]> {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
     const data = await response.json();
-    console.log('Fetched MCP servers data:', data);
     return data;
   } catch (error) {
     console.error("Error fetching MCP servers:", error);
@@ -20,11 +19,11 @@ export async function fetchMCPServers(): Promise<MCPServer[]> {
 export async function searchMCPServers(query: string): Promise<MCPServer[]> {
   const servers = await fetchMCPServers();
   const normalizedQuery = query.toLowerCase();
-  
+
   return servers.filter((server) => {
     const normalizedName = server.name.toLowerCase();
     const normalizedDescription = server.description.toLowerCase();
-    
+
     return (
       normalizedName.includes(normalizedQuery) ||
       normalizedDescription.includes(normalizedQuery)

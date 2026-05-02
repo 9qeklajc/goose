@@ -1,56 +1,25 @@
-import { useState, useEffect } from 'react';
-import { Switch } from '../../../ui/switch';
-import { Gear } from '../../../icons/Gear';
+import kebabCase from 'lodash/kebabCase';
+import { Gear } from '../../../icons';
 import { FixedExtensionEntry } from '../../../ConfigContext';
 import { getSubtitle, getFriendlyTitle } from './ExtensionList';
+import { Card, CardHeader, CardTitle, CardContent, CardAction } from '../../../ui/card';
+import { defineMessages, useIntl } from '../../../../i18n';
+
+const i18n = defineMessages({
+  configureExtension: {
+    id: 'extensionItem.configureExtension',
+    defaultMessage: 'Configure {name} Extension',
+  },
+});
 
 interface ExtensionItemProps {
   extension: FixedExtensionEntry;
-  onToggle: (extension: FixedExtensionEntry) => Promise<boolean | void> | void;
   onConfigure?: (extension: FixedExtensionEntry) => void;
   isStatic?: boolean; // to not allow users to edit configuration
 }
 
-export default function ExtensionItem({
-  extension,
-  onToggle,
-  onConfigure,
-  isStatic,
-}: ExtensionItemProps) {
-  // Add local state to track the visual toggle state
-  const [visuallyEnabled, setVisuallyEnabled] = useState(extension.enabled);
-  // Track if we're in the process of toggling
-  const [isToggling, setIsToggling] = useState(false);
-
-  const handleToggle = async (ext: FixedExtensionEntry) => {
-    // Prevent multiple toggles while one is in progress
-    if (isToggling) return;
-
-    setIsToggling(true);
-
-    // Immediately update visual state
-    const newState = !ext.enabled;
-    setVisuallyEnabled(newState);
-
-    try {
-      // Call the actual toggle function that performs the async operation
-      await onToggle(ext);
-      // Success case is handled by the useEffect below when extension.enabled changes
-    } catch (error) {
-      // If there was an error, revert the visual state
-      console.log('Toggle failed, reverting visual state');
-      setVisuallyEnabled(!newState);
-    } finally {
-      setIsToggling(false);
-    }
-  };
-
-  // Update visual state when the actual extension state changes
-  useEffect(() => {
-    if (!isToggling) {
-      setVisuallyEnabled(extension.enabled);
-    }
-  }, [extension.enabled, isToggling]);
+export default function ExtensionItem({ extension, onConfigure, isStatic }: ExtensionItemProps) {
+  const intl = useIntl();
 
   const renderSubtitle = () => {
     const { description, command } = getSubtitle(extension);
@@ -67,37 +36,37 @@ export default function ExtensionItem({
   // Over time we can take the first part of the conditional away as people have bundled: true in their config.yaml entries
 
   // allow configuration editing if extension is not a builtin/bundled extension AND isStatic = false
-  const editable = !(extension.type === 'builtin' || extension.bundled) && !isStatic;
+  const editable =
+    !(extension.type === 'builtin' || ('bundled' in extension && extension.bundled)) && !isStatic;
 
   return (
-    <div
-      className="flex justify-between rounded-lg transition-colors border border-borderSubtle p-4 pt-3 hover:border-borderProminent hover:cursor-pointer"
-      onClick={() => handleToggle(extension)}
+    <Card
+      id={`extension-${kebabCase(extension.name)}`}
+      className="transition-all duration-200 min-h-[120px] overflow-hidden"
     >
-      <div className="flex flex-col w-max-[90%] word-break">
-        <h3 className="text-textStandard">{getFriendlyTitle(extension)}</h3>
-        <p className="text-xs text-textSubtle">{renderSubtitle()}</p>
-      </div>
+      <CardHeader>
+        <CardTitle>{getFriendlyTitle(extension)}</CardTitle>
 
-      <div
-        className="flex items-center justify-end gap-2 w-max-[10%]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {editable && (
-          <button
-            className="text-textSubtle hover:text-textStandard"
-            onClick={() => (onConfigure ? onConfigure(extension) : () => {})}
-          >
-            <Gear className="h-4 w-4" />
-          </button>
-        )}
-        <Switch
-          checked={(isToggling && visuallyEnabled) || extension.enabled}
-          onCheckedChange={() => handleToggle(extension)}
-          disabled={isToggling}
-          variant="mono"
-        />
-      </div>
-    </div>
+        <CardAction>
+          <div className="flex items-center justify-end gap-2">
+            {editable && (
+              <button
+                type="button"
+                className="text-text-secondary hover:text-text-primary"
+                aria-label={intl.formatMessage(i18n.configureExtension, {
+                  name: getFriendlyTitle(extension),
+                })}
+                onClick={() => onConfigure?.(extension)}
+              >
+                <Gear className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="px-4 overflow-hidden text-sm break-words text-text-secondary">
+        {renderSubtitle()}
+      </CardContent>
+    </Card>
   );
 }

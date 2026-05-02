@@ -1,34 +1,35 @@
 ---
-sidebar_position: 2
-title: Updating Goose
-sidebar_label: Updating Goose
+sidebar_position: 25
+title: Updating goose
+sidebar_label: Updating goose
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
+import { DesktopAutoUpdateSteps } from '@site/src/components/DesktopAutoUpdateSteps';
 import MacDesktopInstallButtons from '@site/src/components/MacDesktopInstallButtons';
 import WindowsDesktopInstallButtons from '@site/src/components/WindowsDesktopInstallButtons';
 import LinuxDesktopInstallButtons from '@site/src/components/LinuxDesktopInstallButtons';
 
-The Goose CLI and desktop apps are under active and continuous development. To get the newest features and fixes, you should periodically update your Goose client using the following instructions.
+The goose CLI and desktop apps are under active and continuous development. To get the newest features and fixes, you should periodically update your goose client using the following instructions.
 
 <Tabs>
   <TabItem value="mac" label="macOS" default>
     <Tabs groupId="interface">
-      <TabItem value="ui" label="Goose Desktop" default>
-        :::info
-        To update Goose to the latest stable version, reinstall using the instructions below
-        :::
-        <div style={{ marginTop: '1rem' }}>
-          1. <MacDesktopInstallButtons/>
-          2. Unzip the downloaded zip file.
-          3. Run the executable file to launch the Goose Desktop application.
-          4. Overwrite the existing Goose application with the new version.
-          5. Run the executable file to launch the Goose desktop application.
-        </div>
+      <TabItem value="ui" label="goose Desktop" default>
+        Update goose to the latest stable version.
+
+        <DesktopAutoUpdateSteps />
+        
+        **To manually download and install updates:**
+        1. <MacDesktopInstallButtons/>
+        2. Unzip the downloaded zip file
+        3. Drag the extracted `Goose.app` file to the `Applications` folder to overwrite your current version
+        4. Launch goose Desktop
+
       </TabItem>
-      <TabItem value="cli" label="Goose CLI">
-        You can update Goose by running:
+      <TabItem value="cli" label="goose CLI">
+        You can update goose by running:
 
         ```sh
         goose update
@@ -47,10 +48,10 @@ The Goose CLI and desktop apps are under active and continuous development. To g
         Or you can run the [installation](/docs/getting-started/installation) script again:
 
         ```sh
-        curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+        curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
         ```
 
-        To check your current Goose version, use the following command:
+        To check your current goose version, use the following command:
 
         ```sh
         goose --version
@@ -61,20 +62,21 @@ The Goose CLI and desktop apps are under active and continuous development. To g
 
   <TabItem value="linux" label="Linux">
     <Tabs groupId="interface">
-      <TabItem value="ui" label="Goose Desktop" default>
-        :::info
-        To update Goose to the latest stable version, reinstall using the instructions below
-        :::
-        <div style={{ marginTop: '1rem' }}>
-          1. <LinuxDesktopInstallButtons/>
-          2. Extract the downloaded tar.bz2 file.
-          3. Run the executable file to launch the Goose Desktop application.
-          4. Overwrite the existing Goose application with the new version.
-          5. Run the executable file to launch the Goose Desktop application.
-        </div>
+      <TabItem value="ui" label="goose Desktop" default>
+        Update goose to the latest stable version.
+
+        <DesktopAutoUpdateSteps />
+        
+        **To manually download and install updates:**
+        1. <LinuxDesktopInstallButtons/>
+
+        #### For Debian/Ubuntu-based distributions
+        2. In a terminal, navigate to the downloaded DEB file
+        3. Run `sudo dpkg -i (filename).deb`
+        4. Launch goose from the app menu
       </TabItem>
-      <TabItem value="cli" label="Goose CLI">
-        You can update Goose by running:
+      <TabItem value="cli" label="goose CLI">
+        You can update goose by running:
 
         ```sh
         goose update
@@ -93,10 +95,10 @@ The Goose CLI and desktop apps are under active and continuous development. To g
         Or you can run the [installation](/docs/getting-started/installation) script again:
 
         ```sh
-        curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+        curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
         ```
 
-        To check your current Goose version, use the following command:
+        To check your current goose version, use the following command:
 
         ```sh
         goose --version
@@ -107,48 +109,18 @@ The Goose CLI and desktop apps are under active and continuous development. To g
 
   <TabItem value="windows" label="Windows">
     <Tabs groupId="interface">
-      <TabItem value="ui" label="Goose Desktop" default>
-        :::info
-        To update Goose to the latest stable version, reinstall using the instructions below
-        :::
-        <div style={{ marginTop: '1rem' }}>
-          1. <WindowsDesktopInstallButtons/>
-          2. Unzip the downloaded zip file.
-          3. Run the executable file to launch the Goose Desktop application.
-          4. Overwrite the existing Goose application with the new version.
-          5. Run the executable file to launch the Goose Desktop application.
-        </div>
+      <TabItem value="ui" label="goose Desktop" default>
+        Update goose to the latest stable version.
+
+        <DesktopAutoUpdateSteps />
+        
+        **To manually download and install updates:**
+        1. <WindowsDesktopInstallButtons/>
+        2. Unzip the downloaded zip file
+        3. Run the executable file to launch the goose Desktop app
       </TabItem>
-      <TabItem value="cli" label="Goose CLI">
-        There isn't native CLI support for Windows. You can run Goose CLI using WSL (Windows Subsystem for Linux).
-
-        **If you haven't set up WSL yet:**
-
-        1. Open [PowerShell](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows) as Administrator and install WSL and the default Ubuntu distribution:
-
-        ```bash
-        wsl --install
-        ```
-
-        2. If prompted, restart your computer to complete the WSL installation. Once restarted, or if WSL is already installed, launch your Ubuntu shell by running:
-
-        ```bash
-        wsl -d Ubuntu
-        ```
-
-        3. Run the Goose installation script:
-        ```bash
-        curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash
-        ```
-        :::tip
-          If you encounter any issues on download, you might need to install `bzip2` to extract the downloaded file:
-
-          ```bash
-          sudo apt update && sudo apt install bzip2 -y
-          ```
-        :::
-
-        **If you already have Goose CLI installed in WSL, you can update it:**
+      <TabItem value="cli" label="goose CLI">
+        You can update goose by running:
 
         ```sh
         goose update
@@ -164,18 +136,33 @@ The Goose CLI and desktop apps are under active and continuous development. To g
         goose update --reconfigure
         ```
 
-        Or you can run the [installation](/docs/getting-started/installation) script again within WSL:
+        Or you can run the [installation](/docs/getting-started/installation) script again in **Git Bash**, **MSYS2**, or **PowerShell** to update the goose CLI natively on Windows:
 
-        ```sh
-        curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+        ```bash
+        curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
         ```
-
-        To check your current Goose version within WSL, use:
+        
+        To check your current goose version, use the following command:
 
         ```sh
         goose --version
+        ```        
+
+        <details>
+        <summary>Update via Windows Subsystem for Linux (WSL)</summary>
+
+        To update your WSL installation, use `goose update` or run the installation script again via WSL:
+
+        ```sh
+        curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
         ```
+
+       </details>
       </TabItem>
     </Tabs>
   </TabItem>
 </Tabs>
+
+:::info Updating in CI/CD
+If you're running goose in CI or other non-interactive environments, pin a specific version with `GOOSE_VERSION` for reproducible installs. See [CI/CD Environments](/docs/tutorials/cicd) for a complete example and usage details.
+:::

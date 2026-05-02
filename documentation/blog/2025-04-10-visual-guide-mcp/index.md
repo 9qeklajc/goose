@@ -76,18 +76,18 @@ The [Quickstart Guide](/docs/quickstart) walks you through connecting your first
 
 And when you’re ready to explore more, head over to the [tutorials section](/docs/category/tutorials) in the docs — it has step-by-step guides and short video demos to show you how to connect to a variety of MCP servers.
 
-And don't forget to [join the community](https://discord.gg/block-opensource) to see what others are building, ask questions, or to simply connect. 
+And don't forget to [join the community](https://discord.gg/goose-oss) to see what others are building, ask questions, or to simply connect. 
 
 
 <head>
   <meta property="og:title" content="A Visual Guide To MCPs" />
   <meta property="og:type" content="article" />
-  <meta property="og:url" content="https://block.github.io/goose/blog/2025/04/10/visual-guide-mcp" />
+  <meta property="og:url" content="https://goose-docs.ai/blog/2025/04/10/visual-guide-mcp" />
   <meta property="og:description" content="Visual breakdown of MCP: How your agent, tools, and models work together." />
-  <meta property="og:image" content="https://block.github.io/goose/assets/images/mcpblog-40894789122bda594a8576ebcb67a2d8.png" />
+  <meta property="og:image" content="https://goose-docs.ai/assets/images/mcpblog-40894789122bda594a8576ebcb67a2d8.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta property="twitter:domain" content="block.github.io/goose" />
+  <meta property="twitter:domain" content="goose-docs.ai" />
   <meta name="twitter:title" content="A Visual Guide To MCPs" />
   <meta name="twitter:description" content="Visual breakdown of MCP: How your AI agent, tools, and models work together." />
-  <meta name="twitter:image" content="https://block.github.io/goose/assets/images/mcpblog-40894789122bda594a8576ebcb67a2d8.png" />
+  <meta name="twitter:image" content="https://goose-docs.ai/assets/images/mcpblog-40894789122bda594a8576ebcb67a2d8.png" />
 </head>

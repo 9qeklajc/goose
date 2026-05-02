@@ -1,7 +1,32 @@
 import React, { useEffect, useState, useRef, KeyboardEvent } from 'react';
+import { defineMessages, useIntl } from '../../i18n';
 import { Search as SearchIcon } from 'lucide-react';
 import { ArrowDown, ArrowUp, Close } from '../icons';
-import { debounce } from 'lodash';
+import debounce from 'lodash/debounce';
+import { Button } from '../ui/button';
+
+const i18nMessages = defineMessages({
+  defaultPlaceholder: {
+    id: 'searchBar.placeholder',
+    defaultMessage: 'Search conversation...',
+  },
+  caseSensitive: {
+    id: 'searchBar.caseSensitive',
+    defaultMessage: 'Case Sensitive',
+  },
+  previous: {
+    id: 'searchBar.previous',
+    defaultMessage: 'Previous ({shortcut})',
+  },
+  next: {
+    id: 'searchBar.next',
+    defaultMessage: 'Next ({shortcut})',
+  },
+  close: {
+    id: 'searchBar.close',
+    defaultMessage: 'Close ({shortcut})',
+  },
+});
 
 /**
  * Props for the SearchBar component
@@ -22,6 +47,8 @@ interface SearchBarProps {
   inputRef?: React.RefObject<HTMLInputElement>;
   /** Initial search term */
   initialSearchTerm?: string;
+  /** Placeholder text for the search input */
+  placeholder?: string;
 }
 
 /**
@@ -34,13 +61,16 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   searchResults,
   inputRef: externalInputRef,
   initialSearchTerm = '',
+  placeholder,
 }: SearchBarProps) => {
+  const intl = useIntl();
+  const resolvedPlaceholder = placeholder ?? intl.formatMessage(i18nMessages.defaultPlaceholder);
   const [searchTerm, setSearchTerm] = useState(initialSearchTerm);
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
   const internalInputRef = React.useRef<HTMLInputElement>(null);
   const inputRef = externalInputRef || internalInputRef;
-  const debouncedSearchRef = useRef<ReturnType<typeof debounce>>();
+  const debouncedSearchRef = useRef<ReturnType<typeof debounce> | null>(null);
 
   // Create debounced search function
   useEffect(() => {
@@ -142,13 +172,13 @@ export const SearchBar: React.FC<SearchBarProps> = ({
 
   return (
     <div
-      className={`sticky top-0 bg-bgAppInverse text-textProminentInverse z-50 ${
+      className={`sticky top-0 bg-background-inverse text-text-inverse z-30 mb-4 ${
         isExiting ? 'search-bar-exit' : 'search-bar-enter'
       }`}
     >
-      <div className="flex w-full max-w-5xl mx-auto">
-        <div className="relative flex flex-1 items-center h-full">
-          <SearchIcon className="h-4 w-4 text-textSubtleInverse absolute left-3" />
+      <div className="flex w-full items-center">
+        <div className="relative flex flex-1 items-center h-full min-w-0">
+          <SearchIcon className="no-drag h-4 w-4 text-text-inverse/70 absolute left-3" />
           <div className="w-full">
             <input
               ref={inputRef}
@@ -157,16 +187,16 @@ export const SearchBar: React.FC<SearchBarProps> = ({
               value={searchTerm}
               onChange={handleSearch}
               onKeyDown={handleKeyDown}
-              placeholder="Search conversation..."
-              className="w-full text-sm pl-9 pr-24 py-3 bg-bgAppInverse
-                      placeholder:text-textSubtleInverse focus:outline-none 
-                       active:border-borderProminent"
+              placeholder={resolvedPlaceholder}
+              className="no-drag w-full text-sm pl-9 pr-24 py-3 bg-background-inverse text-text-inverse
+                      placeholder:text-text-inverse/50 focus:outline-none 
+                       active:border-border-secondary"
             />
           </div>
 
           <div className="absolute right-3 flex h-full items-center justify-end">
             <div className="flex items-center gap-1">
-              <div className="w-16 text-right text-sm text-textStandardInverse flex items-center justify-end">
+              <div className="w-16 text-right text-sm text-text-inverse/80 flex items-center justify-end">
                 {(() => {
                   return localSearchResults?.count && localSearchResults.count > 0 && searchTerm
                     ? `${localSearchResults.currentIndex}/${localSearchResults.count}`
@@ -177,47 +207,51 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center justify-center h-auto px-4 gap-2">
-          <button
+        <div className="flex items-center justify-center h-auto px-4 gap-2 flex-shrink-0">
+          <Button
             onClick={toggleCaseSensitive}
-            className={`flex items-center justify-center min-w-[32px] h-[28px] rounded transition-all duration-150 ${
+            variant="ghost"
+            className={`no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-all duration-150 ${
               caseSensitive
-                ? 'bg-white/20 shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]'
-                : 'text-textSubtleInverse hover:text-textStandardInverse hover:bg-white/5'
+                ? 'bg-white/20 shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)] text-text-inverse hover:bg-white/25'
+                : 'text-text-inverse/70 hover:text-text-inverse hover:bg-white/10'
             }`}
-            title="Case Sensitive"
+            title={intl.formatMessage(i18nMessages.caseSensitive)}
           >
             <span className="text-md font-normal">Aa</span>
-          </button>
+          </Button>
 
           <div className="flex items-center gap-2">
-            <button onClick={(e) => handleNavigate('prev', e)} className="p-1" title="Previous (↑)">
+            <Button
+              onClick={(e) => handleNavigate('prev', e)}
+              variant="ghost"
+              className="no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-all duration-150 text-text-inverse/70 hover:text-text-inverse hover:bg-white/10"
+              title={intl.formatMessage(i18nMessages.previous, { shortcut: '↑' })}
+            >
               <ArrowUp
-                className={`h-5 w-5 transition-opacity ${
-                  !hasResults
-                    ? 'opacity-30'
-                    : 'text-textSubtleInverse hover:text-textStandardInverse'
-                }`}
+                className={`h-5 w-5 transition-opacity ${!hasResults ? 'opacity-30' : ''}`}
               />
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={(e) => handleNavigate('next', e)}
-              className="p-1"
-              title="Next (↓ or Enter)"
+              variant="ghost"
+              className="no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-all duration-150 text-text-inverse/70 hover:text-text-inverse hover:bg-white/10"
+              title={intl.formatMessage(i18nMessages.next, { shortcut: '↓ or Enter' })}
             >
               <ArrowDown
-                className={`h-5 w-5 transition-opacity ${
-                  !hasResults
-                    ? 'opacity-30'
-                    : 'text-textSubtleInverse hover:text-textStandardInverse'
-                }`}
+                className={`h-5 w-5 transition-opacity ${!hasResults ? 'opacity-30' : ''}`}
               />
-            </button>
+            </Button>
           </div>
 
-          <button onClick={handleClose} className="p-1" title="Close (Esc)">
-            <Close className="h-5 w-5 text-textSubtleInverse hover:text-textStandardInverse" />
-          </button>
+          <Button
+            onClick={handleClose}
+            variant="ghost"
+            className="no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-all duration-150 text-text-inverse/70 hover:text-text-inverse hover:bg-white/10"
+            title={intl.formatMessage(i18nMessages.close, { shortcut: 'Esc' })}
+          >
+            <Close className="h-5 w-5" />
+          </Button>
         </div>
       </div>
     </div>

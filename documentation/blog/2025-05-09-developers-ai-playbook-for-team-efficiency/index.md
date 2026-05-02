@@ -36,7 +36,7 @@ As teams adopt AI tools like Goose, the ability to define and share these automa
 
 ## AI Plays: Standardizing Your Team's Workflows
 
-Goose can help standardize and automate these tasks, by [creating recipes](/docs/guides/session-recipes). As a developer on your team uses Goose, they can create a recipe that describes how to perform a task, and then share that with the rest of the team. These recipes can be shared and reused, and improved over time, just like a sports team’s playbook.
+Goose can help standardize and automate these tasks, by [creating recipes](/docs/guides/recipes/session-recipes). As a developer on your team uses Goose, they can create a recipe that describes how to perform a task, and then share that with the rest of the team. These recipes can be shared and reused, and improved over time, just like a sports team’s playbook.
 
 Recipes are built with an understanding of the workflow you want Goose to help with, and these may involve one or more MCP servers, such as [GitHub](/docs/mcp/github-mcp/) or [PostgreSQL](/docs/mcp/postgres-mcp/). The recipes are designed to be reusable and adaptable, allowing developers to create a library that can be used across different projects.
 
@@ -50,7 +50,7 @@ A Goose Recipe can be saved from a current Goose session, or written as a YAML f
 
 ### Creating a Recipe
 
-If you [create a recipe from a current Goose session](/docs/guides/session-recipes/#create-recipe), it will prompt you for a name and description and will generate some activities that you can edit, along with instructions that you should review and edit. You will be given a URL that you can share with your team.
+If you [create a recipe from a current Goose session](/docs/guides/recipes/session-recipes/#create-recipe), it will prompt you for a name and description and will generate some activities that you can edit, along with instructions that you should review and edit. You will be given a URL that you can share with your team.
 
 To create a recipe from scratch, you can use the Goose CLI to create a new recipe file by using a `/recipe` command in the session. This will create a `recipe.yaml` file in your current directory. To make a custom file you can use `/recipe custom-filename.yaml`. From there, you will add your own instructions and activities.
 
@@ -141,7 +141,7 @@ instructions: |
 
   8. For each category, sort entries by date (newest first).
 
-  9. Look for an existing CHANGELOG.md file and understand its format; create the file if it doesn't exist. Then, output the new changlog content at the top of the file, maintaining the same markdown format, and not changing any existing content.
+  9. Look for an existing CHANGELOG.md file and understand its format; create the file if it doesn't exist. Then, output the new changelog content at the top of the file, maintaining the same markdown format, and not changing any existing content.
 
 extensions:
 - type: builtin
@@ -204,7 +204,7 @@ extensions:
       display_name: Memory
       timeout: 300
       bundled: true
-      description: "For storing and retrieving formating preferences that might be present"
+      description: "For storing and retrieving formatting preferences that might be present"
 prompt: |
   Analyze the staged changes and any unpushed commits in the git repository {{git_repo_path}} to generate a comprehensive pull request description. Work autonomously without requesting additional information.
 
@@ -293,20 +293,20 @@ Your team can create plays for many other tasks:
 
 ## What kinds of tasks can your team automate?
 
-We'd love for you to share your ideas with us! Share your ideas by creating a recipe and posting it to the [Goose community on Discord](http://discord.gg/block-opensource).
+We'd love for you to share your ideas with us! Share your ideas by creating a recipe and posting it to the [Goose community on Discord](http://discord.gg/goose-oss).
 
 
 
 <head>
   <meta property="og:title" content="Championship Driven Development: Your team's AI Playbook for Peak Performance" />
   <meta property="og:type" content="article" />
-  <meta property="og:url" content="https://block.github.io/goose/blog/2025/05/09/developers-ai-playbook-for-team-efficiency" />
+  <meta property="og:url" content="https://goose-docs.ai/blog/2025/05/09/developers-ai-playbook-for-team-efficiency" />
   <meta property="og:description" content="Learn how AI-driven 'plays,' based on Model Context Protocol, can help development teams improve common workflows like changelog generation and pull requests." />
-  <meta property="og:image" content="https://block.github.io/goose/assets/images/cdd-playbook-69a053588574d8678c2acb92a1b21da6.png" />
+  <meta property="og:image" content="https://goose-docs.ai/assets/images/cdd-playbook-69a053588574d8678c2acb92a1b21da6.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta property="twitter:domain" content="block.github.io/goose" />
+  <meta property="twitter:domain" content="goose-docs.ai" />
   <meta name="twitter:title" content="Championship Driven Development: Your team's AI Playbook for Peak Performance" />
   <meta name="twitter:description" content="Learn how AI-driven 'plays,' based on Model Context Protocol, can help development teams improve common workflows like changelog generation and pull requests." />
-  <meta name="twitter:image" content="https://block.github.io/goose/assets/images/cdd-playbook-69a053588574d8678c2acb92a1b21da6.png" />
+  <meta name="twitter:image" content="https://goose-docs.ai/assets/images/cdd-playbook-69a053588574d8678c2acb92a1b21da6.png" />
   <meta name="keywords" content="AI development; Model Context Protocol; developer productivity; team playbook; AI automation; Goose; software development efficiency; changelogs; pull requests" />
 </head>

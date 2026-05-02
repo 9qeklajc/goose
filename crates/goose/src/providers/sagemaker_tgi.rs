@@ -6,19 +6,24 @@ use async_trait::async_trait;
 use aws_config;
 use aws_sdk_bedrockruntime::config::ProvideCredentials;
 use aws_sdk_sagemakerruntime::Client as SageMakerClient;
-use mcp_core::Tool;
+use rmcp::model::Tool;
 use serde_json::{json, Value};
-use tokio::time::sleep;
 
-use super::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{
+    ConfigKey, MessageStream, Provider, ProviderDef, ProviderMetadata, ProviderUsage, Usage,
+};
 use super::errors::ProviderError;
-use super::utils::emit_debug_trace;
-use crate::message::{Message, MessageContent};
+use super::retry::ProviderRetry;
+use super::utils::RequestLog;
+use crate::conversation::message::{Message, MessageContent};
+use crate::session_context::SESSION_ID_HEADER;
+
 use crate::model::ModelConfig;
 use chrono::Utc;
-use mcp_core::content::TextContent;
-use mcp_core::role::Role;
+use futures::future::BoxFuture;
+use rmcp::model::Role;
 
+const SAGEMAKER_TGI_PROVIDER_NAME: &str = "sagemaker_tgi";
 pub const SAGEMAKER_TGI_DOC_LINK: &str =
     "https://docs.aws.amazon.com/sagemaker/latest/dg/realtime-endpoints.html";
 
@@ -30,10 +35,12 @@ pub struct SageMakerTgiProvider {
     sagemaker_client: SageMakerClient,
     endpoint_name: String,
     model: ModelConfig,
+    #[serde(skip)]
+    name: String,
 }
 
 impl SageMakerTgiProvider {
-    pub fn from_env(model: ModelConfig) -> Result<Self> {
+    pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
 
         // Get SageMaker endpoint name (just the name, not full URL)
@@ -51,18 +58,17 @@ impl SageMakerTgiProvider {
             }
         };
 
-        set_aws_env_vars(config.load_values());
-        set_aws_env_vars(config.load_secrets());
+        set_aws_env_vars(config.all_values());
+        set_aws_env_vars(config.all_secrets());
 
-        let aws_config = futures::executor::block_on(aws_config::load_from_env());
+        let aws_config = aws_config::load_from_env().await;
 
         // Validate credentials
-        futures::executor::block_on(
-            aws_config
-                .credentials_provider()
-                .unwrap()
-                .provide_credentials(),
-        )?;
+        aws_config
+            .credentials_provider()
+            .unwrap()
+            .provide_credentials()
+            .await?;
 
         // Create client with longer timeout for model initialization
         let timeout_config = aws_config::timeout::TimeoutConfig::builder()
@@ -80,6 +86,7 @@ impl SageMakerTgiProvider {
             sagemaker_client,
             endpoint_name,
             model,
+            name: SAGEMAKER_TGI_PROVIDER_NAME.to_string(),
         })
     }
 
@@ -142,7 +149,7 @@ impl SageMakerTgiProvider {
         let request = json!({
             "inputs": prompt,
             "parameters": {
-                "max_new_tokens": self.model.max_tokens.unwrap_or(150),
+                "max_new_tokens": self.model.max_output_tokens(),
                 "temperature": self.model.temperature.unwrap_or(0.7),
                 "do_sample": true,
                 "return_full_text": false
@@ -152,17 +159,27 @@ impl SageMakerTgiProvider {
         Ok(request)
     }
 
-    async fn invoke_endpoint(&self, payload: Value) -> Result<Value, ProviderError> {
+    async fn invoke_endpoint(
+        &self,
+        session_id: Option<&str>,
+        payload: Value,
+    ) -> Result<Value, ProviderError> {
         let body = serde_json::to_string(&payload).map_err(|e| {
             ProviderError::RequestFailed(format!("Failed to serialize request: {}", e))
         })?;
 
-        let response = self
+        let mut request = self
             .sagemaker_client
             .invoke_endpoint()
             .endpoint_name(&self.endpoint_name)
             .content_type("application/json")
-            .body(body.into_bytes().into())
+            .body(body.into_bytes().into());
+
+        if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+            request = request.custom_attributes(format!("{SESSION_ID_HEADER}={session_id}"));
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed(format!("SageMaker invoke failed: {}", e)))?;
@@ -203,14 +220,11 @@ impl SageMakerTgiProvider {
         // Strip any HTML tags that might have been generated
         let clean_text = self.strip_html_tags(generated_text);
 
-        Ok(Message {
-            role: Role::Assistant,
-            created: Utc::now().timestamp(),
-            content: vec![MessageContent::Text(TextContent {
-                text: clean_text,
-                annotations: None,
-            })],
-        })
+        Ok(Message::new(
+            Role::Assistant,
+            Utc::now().timestamp(),
+            vec![MessageContent::text(clean_text)],
+        ))
     }
 
     /// Strip HTML tags from text to ensure clean output
@@ -247,7 +261,7 @@ impl SageMakerTgiProvider {
         // Remove any remaining HTML-like tags using a simple pattern
         // This is a basic implementation - for production use, consider using a proper HTML parser
         while let Some(start) = result.find('<') {
-            if let Some(end) = result[start..].find('>') {
+            if let Some(end) = result.get(start..).and_then(|s| s.find('>')) {
                 result.replace_range(start..start + end + 1, "");
             } else {
                 break;
@@ -258,108 +272,91 @@ impl SageMakerTgiProvider {
     }
 }
 
-impl Default for SageMakerTgiProvider {
-    fn default() -> Self {
-        let model = ModelConfig::new(SageMakerTgiProvider::metadata().default_model);
-        SageMakerTgiProvider::from_env(model).expect("Failed to initialize SageMaker TGI provider")
-    }
-}
+impl ProviderDef for SageMakerTgiProvider {
+    type Provider = Self;
 
-#[async_trait]
-impl Provider for SageMakerTgiProvider {
     fn metadata() -> ProviderMetadata {
         ProviderMetadata::new(
-            "sagemaker_tgi",
+            SAGEMAKER_TGI_PROVIDER_NAME,
             "Amazon SageMaker TGI",
             "Run Text Generation Inference models through Amazon SageMaker endpoints. Requires AWS credentials and a SageMaker endpoint URL.",
             SAGEMAKER_TGI_DEFAULT_MODEL,
             vec![SAGEMAKER_TGI_DEFAULT_MODEL],
             SAGEMAKER_TGI_DOC_LINK,
             vec![
-                ConfigKey::new("SAGEMAKER_ENDPOINT_NAME", false, false, None),
-                ConfigKey::new("AWS_REGION", true, false, Some("us-east-1")),
-                ConfigKey::new("AWS_PROFILE", true, false, Some("default")),
+                ConfigKey::new("SAGEMAKER_ENDPOINT_NAME", true, false, None, true),
+                ConfigKey::new("AWS_REGION", false, false, Some("us-east-1"), true),
+                ConfigKey::new("AWS_PROFILE", false, false, Some("default"), true),
             ],
         )
+    }
+
+    fn from_env(
+        model: ModelConfig,
+        _extensions: Vec<crate::config::ExtensionConfig>,
+    ) -> BoxFuture<'static, Result<Self::Provider>> {
+        Box::pin(Self::from_env(model))
+    }
+}
+
+#[async_trait]
+impl Provider for SageMakerTgiProvider {
+    fn get_name(&self) -> &str {
+        &self.name
     }
 
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }
 
-    #[tracing::instrument(
-        skip(self, system, messages, tools),
-        fields(model_config, input, output, input_tokens, output_tokens, total_tokens)
-    )]
-    async fn complete(
+    async fn stream(
         &self,
+        model_config: &ModelConfig,
+        session_id: &str,
         system: &str,
         messages: &[Message],
         tools: &[Tool],
-    ) -> Result<(Message, ProviderUsage), ProviderError> {
-        let model_name = &self.model.model_name;
+    ) -> Result<MessageStream, ProviderError> {
+        let session_id = if session_id.is_empty() {
+            None
+        } else {
+            Some(session_id)
+        };
+        let model_name = &model_config.model_name;
 
         let request_payload = self.create_tgi_request(system, messages).map_err(|e| {
             ProviderError::RequestFailed(format!("Failed to create request: {}", e))
         })?;
 
-        // Retry configuration
-        const MAX_RETRIES: u32 = 3;
-        const INITIAL_BACKOFF_MS: u64 = 1000; // 1 second
-        const MAX_BACKOFF_MS: u64 = 30000; // 30 seconds
+        let response = self
+            .with_retry(|| self.invoke_endpoint(session_id, request_payload.clone()))
+            .await?;
 
-        let mut attempts = 0;
-        let mut backoff_ms = INITIAL_BACKOFF_MS;
+        let message = self.parse_tgi_response(response)?;
 
-        loop {
-            attempts += 1;
+        // TGI doesn't provide usage statistics, so we estimate
+        let usage = Usage::new(
+            Some(0), // Would need to tokenize input to get accurate count
+            Some(0), // Would need to tokenize output to get accurate count
+            Some(0),
+        );
 
-            match self.invoke_endpoint(request_payload.clone()).await {
-                Ok(response) => {
-                    let message = self.parse_tgi_response(response)?;
+        // Add debug trace
+        let debug_payload = serde_json::json!({
+            "system": system,
+            "messages": messages,
+            "tools": tools
+        });
+        let mut log = RequestLog::start(&self.model, &debug_payload)?;
+        log.write(
+            &serde_json::to_value(&message).unwrap_or_default(),
+            Some(&usage),
+        )?;
 
-                    // TGI doesn't provide usage statistics, so we estimate
-                    let usage = Usage {
-                        input_tokens: Some(0),  // Would need to tokenize input to get accurate count
-                        output_tokens: Some(0), // Would need to tokenize output to get accurate count
-                        total_tokens: Some(0),
-                    };
-
-                    // Add debug trace
-                    let debug_payload = serde_json::json!({
-                        "system": system,
-                        "messages": messages,
-                        "tools": tools
-                    });
-                    emit_debug_trace(
-                        &self.model,
-                        &debug_payload,
-                        &serde_json::to_value(&message).unwrap_or_default(),
-                        &usage,
-                    );
-
-                    let provider_usage = ProviderUsage::new(model_name.to_string(), usage);
-                    return Ok((message, provider_usage));
-                }
-                Err(err) => {
-                    if attempts > MAX_RETRIES {
-                        return Err(err);
-                    }
-
-                    // Log retry attempt
-                    tracing::warn!(
-                        "SageMaker TGI request failed (attempt {}/{}), retrying in {} ms: {:?}",
-                        attempts,
-                        MAX_RETRIES,
-                        backoff_ms,
-                        err
-                    );
-
-                    // Wait before retry
-                    sleep(Duration::from_millis(backoff_ms)).await;
-                    backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
-                }
-            }
-        }
+        let provider_usage = ProviderUsage::new(model_name.to_string(), usage);
+        Ok(super::base::stream_from_single_message(
+            message,
+            provider_usage,
+        ))
     }
 }

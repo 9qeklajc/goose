@@ -1,3 +1,5 @@
+name: CI
+
 on:
   push:
     branches:
@@ -10,141 +12,218 @@ on:
       - main
   workflow_dispatch:
 
-name: CI
-
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      docs-only: ${{ steps.filter.outputs.docs-only }}
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - name: Check for file changes
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # pin@v3
+        id: filter
+        with:
+          filters: |
+            docs-only:
+              - 'documentation/**'
+            code:
+              - '!documentation/**'
+
   rust-format:
     name: Check Rust Code Format
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
     steps:
       - name: Checkout Code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pin@v4
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1.16.0
 
       - name: Run cargo fmt
-        run: source ./bin/activate-hermit && cargo fmt --check
+        run: cargo fmt --check
 
   rust-build-and-test:
     name: Build and Test Rust Project
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
     steps:
-      # Add disk space cleanup before linting
-      - name: Check disk space before build
-        run: df -h
-
-      #https://github.com/actions/runner-images/issues/2840
-      - name: Clean up disk space
-        run: |
-          echo "Cleaning up disk space..."
-          sudo rm -rf \
-            /opt/google/chrome \
-            /opt/microsoft/msedge \
-            /opt/microsoft/powershell \
-            /usr/lib/mono \
-            /usr/local/lib/android \
-            /usr/local/lib/node_modules \
-            /usr/local/share/chromium \
-            /usr/local/share/powershell \
-            /usr/share/dotnet \
-            /usr/share/swift \
-            /opt/ghc \
-            /opt/hostedtoolcache \
-            /usr/local/graalvm \
-            /usr/local/sqlpackage
-          
-          # Clean package manager caches
-          sudo apt-get clean
-          sudo apt-get autoremove -y
-          
-          # Clean docker if present
-          docker system prune -af 2>/dev/null || true
-          
-          df -h
-
       - name: Checkout Code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pin@v4
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1.16.0
 
       - name: Install Dependencies
         run: |
           sudo apt update -y
           sudo apt install -y libdbus-1-dev gnome-keyring libxcb1-dev
 
-      - name: Cache Cargo Registry
-        uses: actions/cache@2f8e54208210a422b2efd51efaa6bd6d7ca8920f # pin@v3
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache Cargo Index
-        uses: actions/cache@2f8e54208210a422b2efd51efaa6bd6d7ca8920f # pin@v3
-        with:
-          path: ~/.cargo/index
-          key: ${{ runner.os }}-cargo-index
-          restore-keys: |
-            ${{ runner.os }}-cargo-index
-
-      - name: Cache Cargo Build
-        uses: actions/cache@2f8e54208210a422b2efd51efaa6bd6d7ca8920f # pin@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
 
       - name: Build and Test
         run: |
           gnome-keyring-daemon --components=secrets --daemonize --unlock <<< 'foobar'
-          source ../bin/activate-hermit && cargo test
+          export CARGO_INCREMENTAL=0
+          cargo test -- --skip scenario_tests::scenarios::tests
+          cargo test --jobs 1 scenario_tests::scenarios::tests
         working-directory: crates
+        env:
+          RUST_MIN_STACK: 8388608
 
-      - name: Check disk space before cleanup
-        run: df -h
 
-      - name: Clean up disk space
-        run: |
-          echo "Cleaning up disk space..."
-          # Remove debug artifacts that are no longer needed after tests
-          rm -rf target/debug/deps
-          rm -rf target/debug/build
-          rm -rf target/debug/incremental
-          # Clean cargo cache more aggressively
-          cargo clean || true
-          # Clean npm cache if it exists
-          npm cache clean --force 2>/dev/null || true
-          # Clean apt cache
-          sudo apt-get clean
-          sudo apt-get autoremove -y
-          # Remove unnecessary large directories
-          rm -rf ~/.cargo/registry/index || true
-          rm -rf ~/.cargo/registry/cache || true
-          # Remove docker images if any
-          docker system prune -af 2>/dev/null || true
-
-      - name: Check disk space after cleanup
-        run: df -h
-
-      - name: Lint
-        run: source ./bin/activate-hermit && cargo clippy -- -D warnings
-
-  desktop-lint:
-    name: Lint Electron Desktop App
-    runs-on: macos-latest
+  rust-build-windows:
+    name: Build Rust Project on Windows
+    runs-on: windows-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout Code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pin@v4
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
+        with:
+          key: windows-ci
+
+      - name: Setup Rust
+        shell: bash
+        run: |
+          rustup show
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Build
+        run: cargo build --target x86_64-pc-windows-msvc
+        env:
+          CARGO_INCREMENTAL: "0"
+
+  rust-msrv:
+    name: Check MSRV
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [ -z "$msrv" ]; then
+            echo "Could not find rust-version in workspace Cargo.toml" >&2
+            exit 1
+          fi
+          echo "msrv=$msrv" >> "$GITHUB_OUTPUT"
+          echo "MSRV: $msrv"
+
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.msrv }}
 
       - name: Install Dependencies
-        run: source ../../bin/activate-hermit && npm ci
+        run: |
+          sudo apt update -y
+          sudo apt install -y libdbus-1-dev libxcb1-dev
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
+        with:
+          key: msrv
+
+      - name: Check with MSRV toolchain
+        run: cargo check --workspace --locked --all-targets
+        env:
+          CARGO_INCREMENTAL: "0"
+
+  rust-lint:
+    name: Lint Rust Code
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1.16.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Lint
+        run: |
+          source ./bin/activate-hermit
+          # use the non-hermit rust toolchain because the rust-cache action does not
+          # play nicely with hermit-managed rust
+          hermit uninstall rustup
+          export CARGO_INCREMENTAL=0
+          cargo clippy --workspace --all-targets --exclude v8 -- -D warnings
+
+  schema-check:
+    name: Check Generated Schemas are Up-to-Date
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1.16.0
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update -y
+          sudo apt install -y libdbus-1-dev libxcb1-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
+
+      - name: Install Node.js Dependencies
+        run: |
+          source ./bin/activate-hermit
+          cd ui/desktop && pnpm install --frozen-lockfile
+          cd ../sdk && pnpm install --frozen-lockfile
+
+      - name: Check OpenAPI Schema is Up-to-Date
+        run: |
+          source ./bin/activate-hermit
+          hermit uninstall rustup
+          just check-openapi-schema
+
+      - name: Check ACP Schema is Up-to-Date
+        run: |
+          source ./bin/activate-hermit
+          just check-acp-schema
+
+  desktop-lint:
+    name: Test and Lint Electron Desktop App
+    runs-on: macos-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      # Temporarily disabled due to GitHub Actions bug on macOS runners
+      # https://github.com/actions/runner-images/issues/13341
+      # https://github.com/actions/runner/issues/4134
+      # - name: Cache pnpm dependencies
+      #   uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7  # v5.0.2
+      #   with:
+      #     path: |
+      #       ui/desktop/node_modules
+      #       .hermit/node/cache
+      #     key: ci-pnpm-cache-v1-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
+      #     restore-keys: |
+      #       ci-pnpm-cache-v1-${{ runner.os }}-
+
+      - name: Install Dependencies
+        run: source ../../bin/activate-hermit && pnpm install --frozen-lockfile
         working-directory: ui/desktop
 
       - name: Run Lint
-        run: source ../../bin/activate-hermit && npm run lint:check
+        run: source ../../bin/activate-hermit && pnpm run lint:check
         working-directory: ui/desktop
 
-  # Faster Desktop App build for PRs only
-  bundle-desktop-unsigned:
-    uses: ./.github/workflows/bundle-desktop.yml
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    with:
-      signing: false
+      - name: Run Tests
+        run: source ../../bin/activate-hermit && pnpm run test:run
+        working-directory: ui/desktop

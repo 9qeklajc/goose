@@ -22,10 +22,10 @@
     "bundled": true
   },
   {
-    "id": "memory",
-    "name": "memory",
-    "display_name": "Memory",
-    "description": "Teach goose your preferences as you go.",
+    "id": "autovisualiser",
+    "name": "autovisualiser",
+    "display_name": "Auto Visualiser",
+    "description": "Data visualization and UI generation tools",
     "enabled": false,
     "type": "builtin",
     "env_keys": [],
@@ -33,10 +33,10 @@
     "bundled": true
   },
   {
-    "id": "jetbrains",
-    "display_name": "Jetbrains",
-    "name": "jetbrains",
-    "description": "Integration with any Jetbrains IDE",
+    "id": "memory",
+    "name": "memory",
+    "display_name": "Memory",
+    "description": "Teach goose your preferences as you go.",
     "enabled": false,
     "type": "builtin",
     "env_keys": [],

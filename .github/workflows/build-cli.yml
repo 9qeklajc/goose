@@ -1,7 +1,12 @@
-# This is a **reuseable** workflow that bundles the Desktop App for macOS.
+# This is a **reuseable** workflow that builds the CLI for multiple platforms.
 # It doesn't get triggered on its own. It gets used in multiple workflows:
 #  - release.yml
 #  - canary.yml
+#
+# Platform Build Strategy:
+#  - Linux: Uses Ubuntu runner with cross-compilation
+#  - macOS: Uses macOS runner with cross-compilation
+#  - Windows: Uses Windows runner with native MSVC build
 on:
   workflow_call:
     inputs:
@@ -9,62 +14,93 @@ on:
         required: false
         default: ""
         type: string
-      # Let's allow overriding the OSes and architectures in JSON array form:
-      # e.g. '["ubuntu-latest","macos-latest"]'
-      # If no input is provided, these defaults apply.
-      operating-systems:
-        type: string
-        required: false
-        default: '["ubuntu-latest","macos-latest"]'
-      architectures:
-        type: string
-        required: false
-        default: '["x86_64","aarch64"]'
       ref:
         type: string
         required: false
-        default: 'refs/heads/main'
+        default: ""
 
 name: "Reusable workflow to build CLI"
 
 jobs:
   build-cli:
     name: Build CLI
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.build-on }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(inputs.operating-systems) }}
-        architecture: ${{ fromJson(inputs.architectures) }}
         include:
           - os: ubuntu-latest
+            architecture: x86_64
             target-suffix: unknown-linux-gnu
+            build-on: ubuntu-latest
+            use-cross: true
+            cc: gcc-10
+            variant: standard
+          - os: ubuntu-latest
+            architecture: aarch64
+            target-suffix: unknown-linux-gnu
+            build-on: ubuntu-latest
+            use-cross: true
+            cc: gcc-10
+            variant: standard
           - os: macos-latest
+            architecture: x86_64
             target-suffix: apple-darwin
+            build-on: macos-latest
+            use-cross: true
+            variant: standard
+          - os: macos-latest
+            architecture: aarch64
+            target-suffix: apple-darwin
+            build-on: macos-latest
+            use-cross: true
+            variant: standard
+          - os: windows
+            architecture: x86_64
+            target-suffix: pc-windows-msvc
+            build-on: windows-latest
+            use-cross: false
+            variant: standard
+          - os: windows
+            architecture: x86_64
+            target-suffix: pc-windows-msvc
+            build-on: windows-latest
+            use-cross: false
+            variant: cuda
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pin@v4
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ inputs.ref }}
-          fetch-depth: 0
 
       - name: Update version in Cargo.toml
         if: ${{ inputs.version != '' }}
+        shell: bash
         run: |
           sed -i.bak 's/^version = ".*"/version = "'${{ inputs.version }}'"/' Cargo.toml
           rm -f Cargo.toml.bak
 
       - name: Install cross
+        if: matrix.use-cross
         run: source ./bin/activate-hermit && cargo install cross --git https://github.com/cross-rs/cross
 
-      # Install Go for building temporal-service
-      - name: Set up Go
-        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # pin@v5
+      - name: Cache Cargo artifacts (Linux/macOS)
+        if: matrix.use-cross
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2.8.2
         with:
-          go-version: '1.21'
+          key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}-macos-deployment-target-12
 
-      - name: Build CLI
+      - name: Cache Cargo artifacts (Windows)
+        if: matrix.os == 'windows'
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2.8.2
+        with:
+          key: windows-msvc-cli-${{ matrix.variant }}
+
+      - name: Build CLI (Linux/macOS)
+        if: matrix.use-cross
         env:
           CROSS_NO_WARNINGS: 0
           RUST_LOG: debug
@@ -80,69 +116,107 @@ jobs:
           echo "Cross version:"
           cross --version
 
-          echo "Building with explicit PROTOC path..."
-          cross build --release --target ${TARGET} -p goose-cli -vv
+          export CC="${{ matrix.cc || ''}}"
+          cross build --release --target ${TARGET} -p goose-cli
 
-      - name: Build temporal-service for target platform using build.sh script
+      - name: Setup Rust (Windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          rustup show
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Install CUDA toolkit (Windows CUDA)
+        if: ${{ matrix.os == 'windows' && matrix.variant == 'cuda' }}
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: '12.9.1'
+          method: 'local'
+          log-file-suffix: 'build-cli-windows-cuda.txt'
+
+      - name: Set up MSVC developer environment (Windows CUDA)
+        if: ${{ matrix.os == 'windows' && matrix.variant == 'cuda' }}
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: amd64
+
+      - name: Verify CUDA toolchain (Windows CUDA)
+        if: ${{ matrix.os == 'windows' && matrix.variant == 'cuda' }}
+        shell: pwsh
+        env:
+          CUDA_COMPUTE_CAP: "80"
+        run: |
+          Write-Output "CUDA_PATH=$env:CUDA_PATH"
+          Write-Output "CUDA_COMPUTE_CAP=$env:CUDA_COMPUTE_CAP"
+          where.exe cl
+          where.exe nvcc
+          nvcc -V
+
+      - name: Build CLI (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        env:
+          CUDA_COMPUTE_CAP: ${{ matrix.variant == 'cuda' && '80' || '' }}
+          LLAMA_STATIC_CRT: ${{ matrix.variant == 'cuda' && '1' || '' }}
+        run: |
+          Write-Output "Building Windows CLI executable..."
+          if ("${{ matrix.variant }}" -eq "cuda") {
+            $cudaRustflagsConfig = 'target.x86_64-pc-windows-msvc.rustflags=["-C","target-feature=+crt-static"]'
+            cargo build --config $cudaRustflagsConfig --release --target x86_64-pc-windows-msvc -p goose-cli --features cuda
+          } else {
+            cargo build --release --target x86_64-pc-windows-msvc -p goose-cli
+          }
+
+          if (-not (Test-Path "./target/x86_64-pc-windows-msvc/release/goose.exe")) {
+            Write-Error "Windows CLI binary not found."
+            Get-ChildItem ./target/x86_64-pc-windows-msvc/release/ -ErrorAction SilentlyContinue
+            exit 1
+          }
+
+          Write-Output "Windows CLI binary found."
+          Get-Item ./target/x86_64-pc-windows-msvc/release/goose.exe
+
+      - name: Package CLI (Linux/macOS)
+        if: matrix.use-cross
         run: |
           source ./bin/activate-hermit
           export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
-          
-          # Set Go cross-compilation variables based on target
-          case "${TARGET}" in
-            "x86_64-unknown-linux-gnu")
-              export GOOS=linux
-              export GOARCH=amd64
-              BINARY_NAME="temporal-service"
-              ;;
-            "aarch64-unknown-linux-gnu")
-              export GOOS=linux
-              export GOARCH=arm64
-              BINARY_NAME="temporal-service"
-              ;;
-            "x86_64-apple-darwin")
-              export GOOS=darwin
-              export GOARCH=amd64
-              BINARY_NAME="temporal-service"
-              ;;
-            "aarch64-apple-darwin")
-              export GOOS=darwin
-              export GOARCH=arm64
-              BINARY_NAME="temporal-service"
-              ;;
-            *)
-              echo "Unsupported target: ${TARGET}"
-              exit 1
-              ;;
-          esac
-          
-          echo "Building temporal-service for ${GOOS}/${GOARCH} using build.sh script..."
-          cd temporal-service
-          # Run build.sh with cross-compilation environment
-          GOOS="${GOOS}" GOARCH="${GOARCH}" ./build.sh
-          # Move the built binary to the expected location
-          mv "${BINARY_NAME}" "../target/${TARGET}/release/${BINARY_NAME}"
-          echo "temporal-service built successfully for ${TARGET}"
 
-      - name: Package CLI with temporal-service
-        run: |
-          source ./bin/activate-hermit
-          export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
-          
           # Create a directory for the package contents
           mkdir -p "target/${TARGET}/release/goose-package"
-          
-          # Copy binaries
+
+          # Copy the goose binary
           cp "target/${TARGET}/release/goose" "target/${TARGET}/release/goose-package/"
-          cp "target/${TARGET}/release/temporal-service" "target/${TARGET}/release/goose-package/"
-          
-          # Create the tar archive with both binaries
+
           cd "target/${TARGET}/release"
           tar -cjf "goose-${TARGET}.tar.bz2" -C goose-package .
-          echo "ARTIFACT=target/${TARGET}/release/goose-${TARGET}.tar.bz2" >> $GITHUB_ENV
+          tar -czf "goose-${TARGET}.tar.gz" -C goose-package .
+          echo "ARTIFACT_BZ2=target/${TARGET}/release/goose-${TARGET}.tar.bz2" >> $GITHUB_ENV
+          echo "ARTIFACT_GZ=target/${TARGET}/release/goose-${TARGET}.tar.gz" >> $GITHUB_ENV
+
+      - name: Package CLI (Windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+          export VARIANT_SUFFIX=""
+          if [ "${{ matrix.variant }}" = "cuda" ]; then
+            VARIANT_SUFFIX="-cuda"
+          fi
+
+          mkdir -p "target/${TARGET}/release/goose-package"
+
+          cp "target/${TARGET}/release/goose.exe" "target/${TARGET}/release/goose-package/"
+
+          cd "target/${TARGET}/release"
+          7z a -tzip "goose-${TARGET}${VARIANT_SUFFIX}.zip" goose-package/
+          echo "ARTIFACT_ZIP=target/${TARGET}/release/goose-${TARGET}${VARIANT_SUFFIX}.zip" >> $GITHUB_ENV
 
       - name: Upload CLI artifact
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # pin@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
-          name: goose-${{ matrix.architecture }}-${{ matrix.target-suffix }}
-          path: ${{ env.ARTIFACT }}
+          name: goose-${{ matrix.architecture }}-${{ matrix.target-suffix }}${{ matrix.variant == 'cuda' && '-cuda' || '' }}
+          path: |
+            ${{ env.ARTIFACT_BZ2 }}
+            ${{ env.ARTIFACT_GZ }}
+            ${{ env.ARTIFACT_ZIP }}

@@ -1,34 +1,35 @@
 ---
 title: Developer Extension
-description: Use Developer MCP Server as a Goose Extension
+description: Use Developer MCP Server as a goose Extension
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import YouTubeShortEmbed from '@site/src/components/YouTubeShortEmbed';
+import GooseBuiltinInstaller from '@site/src/components/GooseBuiltinInstaller';
+import { Tornado } from 'lucide-react';
 
 <YouTubeShortEmbed videoUrl="https://www.youtube.com/embed/on_p-LeIrak" />
 
-The Developer extension allows Goose to automate developer-centric tasks such as file editing, shell command execution, and project setup.
+The Developer extension allows goose to automate developer-centric tasks such as file editing, shell command execution, and project setup. It also provides tools for [enhanced code editing](/docs/guides/enhanced-code-editing) and [codebase analysis](/docs/guides/codebase-analysis).
 
-This tutorial will cover enabling and using the Developer MCP Server, which is a built-in Goose extension. 
+This tutorial will cover enabling and using the Developer MCP Server, which is a built-in goose extension. 
 
 
 ## Configuration
 
 :::info
-The Developer extension is already enabled by default when Goose is installed.
+The Developer extension is already enabled by default when goose is installed.
 :::
 
-1. Ensure extension is enabled:
-
 <Tabs groupId="interface">
-  <TabItem value="ui" label="Goose Desktop" default>
-  1. Click `...` in the upper right corner
-  2. Click `Advanced Settings`
-  3. Under `Extensions`, toggle `Developer` to on.
+  <TabItem value="ui" label="goose Desktop" default>
+  <GooseBuiltinInstaller
+    extensionName="Developer"
+    description="Automate developer-centric tasks like file editing and shell commands"
+  />
   </TabItem>
-  <TabItem value="cli" label="Goose CLI">
+  <TabItem value="cli" label="goose CLI">
 
   1. Run the `configure` command:
   ```sh
@@ -53,20 +54,16 @@ The Developer extension is already enabled by default when Goose is installed.
 
 ## Example Usage
 
-In this example, I'm going to have Goose automate setting up my JavaScript developer environment with Express, Mongoose, Nodemon, Dotenv and initialize Git.
-
-:::info LLM
-Anthropic's Claude 3.5 Sonnet was used for this task.
-:::
+In this example, I'm going to have goose automate setting up my JavaScript developer environment with Express, Mongoose, Nodemon, Dotenv and initialize Git.
 
 
 <Tabs groupId="interface">
-  <TabItem value="ui" label="Goose Desktop" default>
-   1. Open a new session in Goose Desktop
+  <TabItem value="ui" label="goose Desktop" default>
+   1. Open a new session in goose Desktop
   </TabItem>
-  <TabItem value="cli" label="Goose CLI">
+  <TabItem value="cli" label="goose CLI">
 
-  1. Open a terminal and start a new Goose session:
+  1. Open a terminal and start a new goose session:
 
   ```sh
   goose session
@@ -75,14 +72,14 @@ Anthropic's Claude 3.5 Sonnet was used for this task.
   </TabItem>
 </Tabs>
 
-### Goose Prompt
+### goose Prompt
 ```
 set up a new JavaScript project with Express, Mongoose, Nodemon, and Dotenv? Fetch the latest package versions, generate a README with those versions, and initialize Git
 ```
 
-After 1 minute, Goose was done setting up my entire dev environment! 🎉
+After 1 minute, goose was done setting up my entire dev environment! 🎉
 
-### Goose Output
+### goose Output
 
 ```md
 I'll help you set up a new JavaScript project with those dependencies. I'll break this down into steps:
@@ -154,3 +151,113 @@ curl x POST http://localhost:3000/api/users \
 
 Would you like me to add any additional features or make other improvements to the setup?
 ```
+
+## Environment Variables in Shell Commands
+
+Shell commands executed by the `shell` tool inherit the environment of the running goose process. This typically includes:
+- System variables like `PATH`, `HOME`, and `USER`
+- Environment variables present in the process that launched goose (for example, your terminal's environment when you start goose from a shell)
+- Session-specific variables injected by goose, such as `AGENT_SESSION_ID` for [session-isolated workflows](/docs/guides/environment-variables#using-session-ids-in-workflows)
+
+This enables workflows that depend on environment configuration, such as authenticated CLI operations and build processes.
+
+:::info
+goose Desktop or launcher-based starts may use a different environment and may not load your shell startup files.
+:::
+
+:::warning Sensitive Information
+Environment variables may contain sensitive values like API keys and tokens (e.g., `GITHUB_TOKEN`, `AWS_ACCESS_KEY_ID`).
+:::
+
+## Configuring Access Controls
+
+By default, goose can run system commands with your user privileges and edit any accessible file **without your approval**. This is because goose runs in Autonomous permission mode by default and has access to the Developer extension's shell and file editing tools. While this configuration allows goose to work quickly and independently, there's potential for unexpected outcomes. Understanding the available access control features can help you configure goose to match your comfort level and specific needs.
+
+:::tip
+See the [Quick Setup Example](#quick-setup-example) below for some ways to configure more control over goose's behavior.
+:::
+
+### Developer Extension Tools
+
+The Developer extension provides these tools:
+
+| Tool | Description | Use Cases | Risk Level |
+|------|-------------|-----------|------------|
+| `shell` | Execute shell commands | Running tests, installing packages, git operations | ⚠️ High<br />Can run any system command with your user privileges |
+| `text_editor` | Read, write, and edit files | Code refactoring, creating files, updating configs | ⚠️ High<br />Can modify any accessible file |
+| `analyze` | Analyze code structure | Understanding codebase, finding dependencies | ✅ Low<br />Read-only code analysis |
+| `screen_capture` | Take screenshots | Debugging UI issues, documenting state | ✅ Low<br />Visual information only |
+| `image_processor` | Process and resize images | Optimizing assets, format conversion | ✅ Low<br />Image manipulation only |
+
+### Access Control Features
+
+You can layer multiple controls to match your risk tolerance and workflow:
+
+- **[goose Permission Modes](/docs/guides/goose-permissions)** control when goose asks for approval:
+
+  | Mode | Description | Use Cases |
+  |------|-------------|-----------|
+  | Autonomous<br />CLI: `auto` | No approval required | Best for experienced users in safe environments |
+  | Manual Approval<br />CLI: `approve` | Review every action | Recommended for sensitive work or when you want maximum control |
+  | Smart Approval<br />CLI: `smart_approve` | AI decides what needs review | Balanced approach |
+  | Chat Only<br />CLI: `chat` | Disable all tools | For maximum security and models that don't support tool-calling |
+
+- **[Tool Permissions](/docs/guides/managing-tools/tool-permissions)** let you set `Always allow`, `Ask before`, and `Never allow` permissions for individual extension tools when in Manual Approval or Smart Approval modes
+
+- **[.gooseignore files](/docs/guides/using-gooseignore)** restrict which files and directories goose can access (`.gitignore` files are fallback)
+
+:::tip Changing Modes In-Session
+You can change goose permission modes during a session without restarting:
+- **CLI**: Use the `/mode` command (e.g. `/mode approve`)
+- **Desktop**: Use the <Tornado className="inline" size={16} /> mode selector button in the bottom menu
+:::
+
+#### Quick Setup Example
+
+You might want more control over goose's operations when working with sensitive systems, exploring unfamiliar codebases, using untrusted models, or simply preferring to review actions before execution.
+
+Here's an example configuration that enables oversight:
+
+1. **Set the [permission mode](/docs/guides/goose-permissions)** to Smart Approval or Manual Approval:
+   ```yaml
+   # ~/.config/goose/config.yaml
+   GOOSE_MODE: smart_approve  # or approve
+   ```
+
+2. **Create a [`.gooseignore` file](/docs/guides/using-gooseignore)** in your project to protect sensitive files:
+   ```
+   .env*
+   secrets.*
+   *.key
+   *.pem
+   .git/
+   ```
+
+3. **Configure [tool permissions](/docs/guides/managing-tools/tool-permissions)** based on your needs
+
+As you become more comfortable with goose's behavior, you can adjust these settings to reduce friction while maintaining appropriate safeguards for your environment.
+
+:::info
+Also see the [Security Guide](/docs/guides/security/) for information about using goose safely.
+:::
+
+## Additional Resources
+
+import ContentCardCarousel from '@site/src/components/ContentCardCarousel';
+
+<ContentCardCarousel
+  items={[
+    {
+      type: 'topic',
+      title: 'Enhanced Code Editing with AI Models',
+      description: 'Use AI models to intelligently apply code changes',
+      linkUrl: '/docs/guides/enhanced-code-editing'
+    },
+    {
+      type: 'topic',
+      title: 'Codebase Analysis',
+      description: 'Understand codebases with semantic analysis and call graphs',
+      linkUrl: '/docs/guides/codebase-analysis'
+    }
+  ]}
+/>

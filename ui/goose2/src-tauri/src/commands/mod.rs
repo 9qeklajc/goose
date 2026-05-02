@@ -1,0 +1,11 @@
+pub mod acp;
+pub mod agent_setup;
+pub mod agents;
+pub mod doctor;
+pub mod git;
+pub mod git_changes;
+pub mod model_setup;
+pub mod path_resolver;
+pub mod project_icons;
+pub mod projects;
+pub mod system;

@@ -24,23 +24,12 @@ on:
       ref:
         type: string
         required: false
-        default: 'refs/heads/main'
-    secrets:
-      CERTIFICATE_OSX_APPLICATION:
-        description: 'Certificate for macOS application signing'
+        default: ''
+      environment:
+        description: 'GitHub Environment containing signing secrets (e.g. "production"). Leave empty to skip.'
         required: false
-      CERTIFICATE_PASSWORD:
-        description: 'Password for the macOS certificate'
-        required: false
-      APPLE_ID:
-        description: 'Apple ID for notarization'
-        required: false
-      APPLE_ID_PASSWORD:
-        description: 'Password for the Apple ID'
-        required: false
-      APPLE_TEAM_ID:
-        description: 'Apple Team ID'
-        required: false
+        type: string
+        default: ''
 
 name: Reusable workflow to bundle desktop app for Intel Mac
 
@@ -48,42 +37,22 @@ jobs:
   bundle-desktop-intel:
     runs-on: macos-latest
     name: Bundle Desktop App on Intel macOS
+    environment: ${{ inputs.environment || '' }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    permissions:
+      id-token: write
+      contents: read
     steps:
       # Check initial disk space
       - name: Check initial disk space
         run: df -h
 
-      # Validate Signing Secrets if signing is enabled
-      - name: Validate Signing Secrets
-        if: ${{ inputs.signing }}
-        run: |
-          if [[ -z "${{ secrets.CERTIFICATE_OSX_APPLICATION }}" ]]; then
-            echo "Error: CERTIFICATE_OSX_APPLICATION secret is required for signing."
-            exit 1
-          fi
-          if [[ -z "${{ secrets.CERTIFICATE_PASSWORD }}" ]]; then
-            echo "Error: CERTIFICATE_PASSWORD secret is required for signing."
-            exit 1
-          fi
-          if [[ -z "${{ secrets.APPLE_ID }}" ]]; then
-            echo "Error: APPLE_ID secret is required for signing."
-            exit 1
-          fi
-          if [[ -z "${{ secrets.APPLE_ID_PASSWORD }}" ]]; then
-            echo "Error: APPLE_ID_PASSWORD secret is required for signing."
-            exit 1
-          fi
-          if [[ -z "${{ secrets.APPLE_TEAM_ID }}" ]]; then
-            echo "Error: APPLE_TEAM_ID secret is required for signing."
-            exit 1
-          fi
-          echo "All required signing secrets are present."
-
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
+          # Only pass ref if it's explicitly set, otherwise let checkout action use its default behavior
+          ref: ${{ inputs.ref != '' && inputs.ref || '' }}
 
       # Update versions before build
       - name: Update versions
@@ -96,53 +65,13 @@ jobs:
           # Update version in package.json
           source ./bin/activate-hermit
           cd ui/desktop
-          npm version ${{ inputs.version }} --no-git-tag-version --allow-same-version
+          npm pkg set "version=${{ inputs.version }}"
 
-      # Pre-build cleanup to ensure enough disk space
-      - name: Pre-build cleanup
-        run: |
-          source ./bin/activate-hermit
-          echo "Performing pre-build cleanup..."
-          # Clean npm cache
-          npm cache clean --force || true
-          # Clean any previous build artifacts
-          rm -rf target || true
-          # Clean Homebrew cache
-          brew cleanup || true
-          # Remove unnecessary large directories
-          rm -rf ~/Library/Caches/* || true
-          # Check disk space after cleanup
-          df -h
-
-      - name: Cache Cargo registry
-        uses: actions/cache@2f8e54208210a422b2efd51efaa6bd6d7ca8920f # pin@v3
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2.8.2
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-intel-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-intel-cargo-registry-
+          key: intel-macos-deployment-target-12
 
-      - name: Cache Cargo index
-        uses: actions/cache@2f8e54208210a422b2efd51efaa6bd6d7ca8920f # pin@v3
-        with:
-          path: ~/.cargo/index
-          key: ${{ runner.os }}-intel-cargo-index
-          restore-keys: |
-            ${{ runner.os }}-intel-cargo-index
-
-      - name: Cache Cargo build
-        uses: actions/cache@2f8e54208210a422b2efd51efaa6bd6d7ca8920f # pin@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-intel-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-intel-cargo-build-
-
-      # Install Go for building temporal-service
-      - name: Set up Go
-        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # pin@v5
-        with:
-          go-version: '1.21'
 
       - name: Build goose-server for Intel macOS (x86_64)
         run: |
@@ -150,20 +79,7 @@ jobs:
           rustup target add x86_64-apple-darwin
           cargo build --release -p goose-server --target x86_64-apple-darwin
 
-      # Build temporal-service using build.sh script
-      - name: Build temporal-service
-        run: |
-          echo "Building temporal-service using build.sh script..."
-          cd temporal-service
-          ./build.sh
-          echo "temporal-service built successfully"
 
-      # Install and prepare temporal CLI
-      - name: Install temporal CLI via hermit
-        run: |
-          echo "Installing temporal CLI via hermit..."
-          ./bin/hermit install temporal-cli
-          echo "temporal CLI installed successfully"
 
       # Post-build cleanup to free space
       - name: Post-build cleanup
@@ -182,19 +98,19 @@ jobs:
       - name: Copy binaries into Electron folder
         run: |
           cp target/x86_64-apple-darwin/release/goosed ui/desktop/src/bin/goosed
-          cp temporal-service/temporal-service ui/desktop/src/bin/temporal-service
-          cp bin/temporal ui/desktop/src/bin/temporal
 
-      - name: Add MacOS certs for signing and notarization
-        if: ${{ inputs.signing }}
-        run: ./scripts/add-macos-cert.sh
-        working-directory: ui/desktop
-        env:
-          CERTIFICATE_OSX_APPLICATION: ${{ secrets.CERTIFICATE_OSX_APPLICATION }}
-          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+      - name: Cache pnpm dependencies
+        uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7  # v5.0.2
+        with:
+          path: |
+            ui/desktop/node_modules
+            .hermit/node/cache
+          key: intel-pnpm-cache-v1-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
+          restore-keys: |
+            intel-pnpm-cache-v1-${{ runner.os }}-
 
       - name: Install dependencies
-        run: source ../../bin/activate-hermit && npm ci
+        run: source ../../bin/activate-hermit && pnpm install --frozen-lockfile
         working-directory: ui/desktop
 
       # Configure Electron builder for Intel architecture
@@ -204,18 +120,28 @@ jobs:
           jq '.build.mac.target[0].arch = "x64"' package.json > package.json.tmp && mv package.json.tmp package.json
         working-directory: ui/desktop
 
+      - name: Import Apple signing certificate
+        if: ${{ inputs.signing }}
+        uses: ./.github/actions/apple-codesign
+        with:
+          certificate-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
       # Check disk space before bundling
       - name: Check disk space before bundling
         run: df -h
 
-      - name: Make Unsigned App
-        if: ${{ !inputs.signing }}
+      - name: Build App
+        env:
+          APPLE_ID: ${{ inputs.signing && secrets.APPLE_ID || '' }}
+          APPLE_ID_PASSWORD: ${{ inputs.signing && secrets.APPLE_ID_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ inputs.signing && secrets.APPLE_TEAM_ID || '' }}
         run: |
           source ../../bin/activate-hermit
           attempt=0
           max_attempts=2
           until [ $attempt -ge $max_attempts ]; do
-            npm run bundle:intel && break
+            pnpm run bundle:intel && break
             attempt=$((attempt + 1))
             echo "Attempt $attempt failed. Retrying..."
             sleep 5
@@ -226,27 +152,12 @@ jobs:
           fi
         working-directory: ui/desktop
 
-      - name: Make Signed App
-        if: ${{ inputs.signing }}
+      - name: Clean up signing keychain
+        if: always()
         run: |
-          source ../../bin/activate-hermit
-          attempt=0
-          max_attempts=2
-          until [ $attempt -ge $max_attempts ]; do
-            npm run bundle:intel && break
-            attempt=$((attempt + 1))
-            echo "Attempt $attempt failed. Retrying..."
-            sleep 5
-          done
-          if [ $attempt -ge $max_attempts ]; then
-            echo "Action failed after $max_attempts attempts."
-            exit 1
+          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
           fi
-        working-directory: ui/desktop
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Final cleanup before artifact upload
         run: |
@@ -257,7 +168,7 @@ jobs:
           df -h
 
       - name: Upload Desktop artifact
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # pin@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: Goose-darwin-x64
           path: ui/desktop/out/Goose-darwin-x64/Goose_intel_mac.zip

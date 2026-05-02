@@ -15,7 +15,7 @@ export function loadRecentDirs(): string[] {
       const data = fs.readFileSync(RECENT_DIRS_FILE, 'utf8');
       const recentDirs: RecentDirs = JSON.parse(data);
 
-      // Filter out invalid directories (non-existent or not directories)
+      // Filter out invalid directories (nonexistent or not directories)
       const validDirs = recentDirs.dirs.filter((dir) => {
         try {
           // Use lstat to detect symlinks and validate path structure
@@ -30,7 +30,7 @@ export function loadRecentDirs(): string[] {
           }
 
           return stats.isDirectory();
-        } catch (error) {
+        } catch {
           // Directory doesn't exist or can't be accessed - don't log full path for security
           console.warn(`Removing inaccessible recent directory`);
           return false;
@@ -66,7 +66,7 @@ export function addRecentDir(dir: string): void {
         console.warn(`Cannot add recent directory: not a directory`);
         return;
       }
-    } catch (error) {
+    } catch {
       console.warn(`Cannot add recent directory: path does not exist or cannot be accessed`);
       return;
     }

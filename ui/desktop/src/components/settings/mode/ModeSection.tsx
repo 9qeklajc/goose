@@ -1,18 +1,19 @@
 import { useEffect, useState, useCallback } from 'react';
 import { all_goose_modes, ModeSelectionItem } from './ModeSelectionItem';
-import { View, ViewOptions } from '../../../App';
 import { useConfig } from '../../ConfigContext';
+import { ConversationLimitsDropdown } from './ConversationLimitsDropdown';
+import { updateSession } from '../../../api';
 
-interface ModeSectionProps {
-  setView: (view: View, viewOptions?: ViewOptions) => void;
-}
-
-export const ModeSection = ({ setView }: ModeSectionProps) => {
+export const ModeSection = ({ sessionId }: { sessionId?: string }) => {
   const [currentMode, setCurrentMode] = useState('auto');
-  const { read, upsert } = useConfig();
+  const [maxTurns, setMaxTurns] = useState<number>(1000);
+  const { config, read, upsert } = useConfig();
 
   const handleModeChange = async (newMode: string) => {
     try {
+      if (sessionId) {
+        await updateSession({ body: { session_id: sessionId, goose_mode: newMode } });
+      }
       await upsert('GOOSE_MODE', newMode, false);
       setCurrentMode(newMode);
     } catch (error) {
@@ -21,45 +22,53 @@ export const ModeSection = ({ setView }: ModeSectionProps) => {
     }
   };
 
-  const fetchCurrentMode = useCallback(async () => {
+  useEffect(() => {
+    const mode = config.GOOSE_MODE as string | undefined;
+    if (mode) {
+      setCurrentMode(mode);
+    }
+  }, [config.GOOSE_MODE]);
+
+  const fetchMaxTurns = useCallback(async () => {
     try {
-      const mode = (await read('GOOSE_MODE', false)) as string;
-      if (mode) {
-        setCurrentMode(mode);
+      const turns = (await read('GOOSE_MAX_TURNS', false)) as number;
+      if (turns) {
+        setMaxTurns(turns);
       }
     } catch (error) {
-      console.error('Error fetching current mode:', error);
+      console.error('Error fetching max turns:', error);
     }
   }, [read]);
 
+  const handleMaxTurnsChange = async (value: number) => {
+    try {
+      await upsert('GOOSE_MAX_TURNS', value, false);
+      setMaxTurns(value);
+    } catch (error) {
+      console.error('Error updating max turns:', error);
+    }
+  };
+
   useEffect(() => {
-    fetchCurrentMode();
-  }, [fetchCurrentMode]);
+    fetchMaxTurns();
+  }, [fetchMaxTurns]);
 
   return (
-    <section id="mode" className="px-8">
-      <div className="flex justify-between items-center mb-2">
-        <h2 className="text-xl font-medium text-textStandard">Mode</h2>
-      </div>
-      <div className="border-b border-borderSubtle pb-8">
-        <p className="text-sm text-textStandard mb-6">
-          Configure how Goose interacts with tools and extensions
-        </p>
-        <div>
-          {all_goose_modes.map((mode) => (
-            <ModeSelectionItem
-              key={mode.key}
-              mode={mode}
-              currentMode={currentMode}
-              showDescription={true}
-              isApproveModeConfigure={false}
-              parentView="settings"
-              setView={setView}
-              handleModeChange={handleModeChange}
-            />
-          ))}
-        </div>
-      </div>
-    </section>
+    <div className="space-y-1">
+      {/* Mode Selection */}
+      {all_goose_modes.map((mode) => (
+        <ModeSelectionItem
+          key={mode.key}
+          mode={mode}
+          currentMode={currentMode}
+          showDescription={true}
+          isApproveModeConfigure={false}
+          handleModeChange={handleModeChange}
+        />
+      ))}
+
+      {/* Conversation Limits Dropdown */}
+      <ConversationLimitsDropdown maxTurns={maxTurns} onMaxTurnsChange={handleMaxTurnsChange} />
+    </div>
   );
 };

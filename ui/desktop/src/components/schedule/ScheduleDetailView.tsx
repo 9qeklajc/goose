@@ -1,10 +1,8 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import BackButton from '../ui/BackButton';
 import { Card } from '../ui/card';
-import MoreMenuLayout from '../more_menu/MoreMenuLayout';
-import { fetchSessionDetails, SessionDetails } from '../../sessions';
 import {
   getScheduleSessions,
   runScheduleNow,
@@ -17,11 +15,71 @@ import {
   ScheduledJob,
 } from '../../schedule';
 import SessionHistoryView from '../sessions/SessionHistoryView';
-import { EditScheduleModal } from './EditScheduleModal';
+import { ScheduleModal, NewSchedulePayload } from './ScheduleModal';
 import { toastError, toastSuccess } from '../../toasts';
 import { Loader2, Pause, Play, Edit, Square, Eye } from 'lucide-react';
 import cronstrue from 'cronstrue';
 import { formatToLocalDateWithTimezone } from '../../utils/date';
+import { getSession, Session } from '../../api';
+import { trackScheduleRunNow, getErrorType } from '../../utils/analytics';
+import { errorMessage } from '../../utils/conversionUtils';
+import { defineMessages, useIntl } from '../../i18n';
+
+const i18n = defineMessages({
+  scheduleNotFound: { id: 'scheduleDetailView.scheduleNotFound', defaultMessage: 'Schedule Not Found' },
+  noScheduleId: { id: 'scheduleDetailView.noScheduleId', defaultMessage: 'No schedule ID provided. Return to schedules list.' },
+  scheduleDetails: { id: 'scheduleDetailView.scheduleDetails', defaultMessage: 'Schedule Details' },
+  viewingScheduleId: { id: 'scheduleDetailView.viewingScheduleId', defaultMessage: 'Viewing Schedule ID: {id}' },
+  scheduleInformation: { id: 'scheduleDetailView.scheduleInformation', defaultMessage: 'Schedule Information' },
+  loadingSchedule: { id: 'scheduleDetailView.loadingSchedule', defaultMessage: 'Loading schedule...' },
+  errorPrefix: { id: 'scheduleDetailView.errorPrefix', defaultMessage: 'Error: {error}' },
+  currentlyRunning: { id: 'scheduleDetailView.currentlyRunning', defaultMessage: 'Currently Running' },
+  paused: { id: 'scheduleDetailView.paused', defaultMessage: 'Paused' },
+  scheduleLabel: { id: 'scheduleDetailView.scheduleLabel', defaultMessage: 'Schedule:' },
+  cronExpression: { id: 'scheduleDetailView.cronExpression', defaultMessage: 'Cron Expression:' },
+  recipeSource: { id: 'scheduleDetailView.recipeSource', defaultMessage: 'Recipe Source:' },
+  lastRun: { id: 'scheduleDetailView.lastRun', defaultMessage: 'Last Run:' },
+  currentSession: { id: 'scheduleDetailView.currentSession', defaultMessage: 'Current Session:' },
+  processStarted: { id: 'scheduleDetailView.processStarted', defaultMessage: 'Process Started:' },
+  actions: { id: 'scheduleDetailView.actions', defaultMessage: 'Actions' },
+  runScheduleNow: { id: 'scheduleDetailView.runScheduleNow', defaultMessage: 'Run Schedule Now' },
+  editSchedule: { id: 'scheduleDetailView.editSchedule', defaultMessage: 'Edit Schedule' },
+  unpauseSchedule: { id: 'scheduleDetailView.unpauseSchedule', defaultMessage: 'Unpause Schedule' },
+  pauseSchedule: { id: 'scheduleDetailView.pauseSchedule', defaultMessage: 'Pause Schedule' },
+  inspectRunningJob: { id: 'scheduleDetailView.inspectRunningJob', defaultMessage: 'Inspect Running Job' },
+  killRunningJob: { id: 'scheduleDetailView.killRunningJob', defaultMessage: 'Kill Running Job' },
+  cannotModifyRunning: { id: 'scheduleDetailView.cannotModifyRunning', defaultMessage: 'Cannot trigger or modify a schedule while it\'s already running.' },
+  pausedWarning: { id: 'scheduleDetailView.pausedWarning', defaultMessage: 'This schedule is paused and will not run automatically. Use "Run Schedule Now" to trigger it manually or unpause to resume automatic execution.' },
+  recentSessions: { id: 'scheduleDetailView.recentSessions', defaultMessage: 'Recent Sessions' },
+  loadingSessions: { id: 'scheduleDetailView.loadingSessions', defaultMessage: 'Loading sessions...' },
+  noSessions: { id: 'scheduleDetailView.noSessions', defaultMessage: 'No sessions found for this schedule.' },
+  sessionId: { id: 'scheduleDetailView.sessionId', defaultMessage: 'Session ID: {id}' },
+  created: { id: 'scheduleDetailView.created', defaultMessage: 'Created: {date}' },
+  messages: { id: 'scheduleDetailView.messages', defaultMessage: 'Messages: {count}' },
+  dir: { id: 'scheduleDetailView.dir', defaultMessage: 'Dir: {path}' },
+  tokens: { id: 'scheduleDetailView.tokens', defaultMessage: 'Tokens: {count}' },
+  idLabel: { id: 'scheduleDetailView.idLabel', defaultMessage: 'ID:' },
+  jobCancelled: { id: 'scheduleDetailView.jobCancelled', defaultMessage: 'Job Cancelled' },
+  jobCancelledMsg: { id: 'scheduleDetailView.jobCancelledMsg', defaultMessage: 'The job was cancelled while starting up.' },
+  scheduleTriggered: { id: 'scheduleDetailView.scheduleTriggered', defaultMessage: 'Schedule Triggered' },
+  newSession: { id: 'scheduleDetailView.newSession', defaultMessage: 'New session: {sessionId}' },
+  runScheduleError: { id: 'scheduleDetailView.runScheduleError', defaultMessage: 'Run Schedule Error' },
+  scheduleUnpaused: { id: 'scheduleDetailView.scheduleUnpaused', defaultMessage: 'Schedule Unpaused' },
+  unpausedMsg: { id: 'scheduleDetailView.unpausedMsg', defaultMessage: 'Unpaused "{id}"' },
+  schedulePaused: { id: 'scheduleDetailView.schedulePaused', defaultMessage: 'Schedule Paused' },
+  pausedMsg: { id: 'scheduleDetailView.pausedMsg', defaultMessage: 'Paused "{id}"' },
+  pauseUnpauseError: { id: 'scheduleDetailView.pauseUnpauseError', defaultMessage: 'Pause/Unpause Error' },
+  jobKilled: { id: 'scheduleDetailView.jobKilled', defaultMessage: 'Job Killed' },
+  killJobError: { id: 'scheduleDetailView.killJobError', defaultMessage: 'Kill Job Error' },
+  jobInspection: { id: 'scheduleDetailView.jobInspection', defaultMessage: 'Job Inspection' },
+  inspectNoInfo: { id: 'scheduleDetailView.inspectNoInfo', defaultMessage: 'No detailed information available' },
+  inspectJobError: { id: 'scheduleDetailView.inspectJobError', defaultMessage: 'Inspect Job Error' },
+  scheduleUpdated: { id: 'scheduleDetailView.scheduleUpdated', defaultMessage: 'Schedule Updated' },
+  updatedMsg: { id: 'scheduleDetailView.updatedMsg', defaultMessage: 'Updated "{id}"' },
+  updateScheduleError: { id: 'scheduleDetailView.updateScheduleError', defaultMessage: 'Update Schedule Error' },
+  failedToLoadSession: { id: 'scheduleDetailView.failedToLoadSession', defaultMessage: 'Failed to load session' },
+  scheduleNotFoundError: { id: 'scheduleDetailView.scheduleNotFoundError', defaultMessage: 'Schedule not found' },
+});
 
 interface ScheduleSessionMeta {
   id: string;
@@ -43,294 +101,131 @@ interface ScheduleDetailViewProps {
   onNavigateBack: () => void;
 }
 
-// Memoized ScheduleInfoCard component to prevent unnecessary re-renders of static content
-const ScheduleInfoCard = React.memo<{
-  scheduleDetails: ScheduledJob;
-}>(({ scheduleDetails }) => {
-  const readableCron = useMemo(() => {
-    try {
-      return cronstrue.toString(scheduleDetails.cron);
-    } catch (e) {
-      console.warn(`Could not parse cron string "${scheduleDetails.cron}":`, e);
-      return scheduleDetails.cron;
-    }
-  }, [scheduleDetails.cron]);
-
-  const formattedLastRun = useMemo(() => {
-    return formatToLocalDateWithTimezone(scheduleDetails.last_run);
-  }, [scheduleDetails.last_run]);
-
-  const formattedProcessStartTime = useMemo(() => {
-    return scheduleDetails.process_start_time
-      ? formatToLocalDateWithTimezone(scheduleDetails.process_start_time)
-      : null;
-  }, [scheduleDetails.process_start_time]);
-
-  return (
-    <Card className="p-4 bg-white dark:bg-gray-800 shadow mb-6">
-      <div className="space-y-2">
-        <div className="flex flex-col md:flex-row md:items-center justify-between">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-white">
-            {scheduleDetails.id}
-          </h3>
-          <div className="mt-2 md:mt-0 flex items-center gap-2">
-            {scheduleDetails.currently_running && (
-              <div className="text-sm text-green-500 dark:text-green-400 font-semibold flex items-center">
-                <span className="inline-block w-2 h-2 bg-green-500 dark:bg-green-400 rounded-full mr-1 animate-pulse"></span>
-                Currently Running
-              </div>
-            )}
-            {scheduleDetails.paused && (
-              <div className="text-sm text-orange-500 dark:text-orange-400 font-semibold flex items-center">
-                <Pause className="w-3 h-3 mr-1" />
-                Paused
-              </div>
-            )}
-          </div>
-        </div>
-        <p className="text-sm text-gray-600 dark:text-gray-300">
-          <span className="font-semibold">Schedule:</span> {readableCron}
-        </p>
-        <p className="text-sm text-gray-600 dark:text-gray-300">
-          <span className="font-semibold">Cron Expression:</span> {scheduleDetails.cron}
-        </p>
-        <p className="text-sm text-gray-600 dark:text-gray-300">
-          <span className="font-semibold">Recipe Source:</span> {scheduleDetails.source}
-        </p>
-        <p className="text-sm text-gray-600 dark:text-gray-300">
-          <span className="font-semibold">Last Run:</span> {formattedLastRun}
-        </p>
-        {scheduleDetails.execution_mode && (
-          <p className="text-sm text-gray-600 dark:text-gray-300">
-            <span className="font-semibold">Execution Mode:</span>{' '}
-            <span
-              className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
-                scheduleDetails.execution_mode === 'foreground'
-                  ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
-                  : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
-              }`}
-            >
-              {scheduleDetails.execution_mode === 'foreground' ? '🖥️ Foreground' : '⚡ Background'}
-            </span>
-          </p>
-        )}
-        {scheduleDetails.currently_running && scheduleDetails.current_session_id && (
-          <p className="text-sm text-gray-600 dark:text-gray-300">
-            <span className="font-semibold">Current Session:</span>{' '}
-            {scheduleDetails.current_session_id}
-          </p>
-        )}
-        {scheduleDetails.currently_running && formattedProcessStartTime && (
-          <p className="text-sm text-gray-600 dark:text-gray-300">
-            <span className="font-semibold">Process Started:</span> {formattedProcessStartTime}
-          </p>
-        )}
-      </div>
-    </Card>
-  );
-});
-
-ScheduleInfoCard.displayName = 'ScheduleInfoCard';
-
 const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onNavigateBack }) => {
+  const intl = useIntl();
   const [sessions, setSessions] = useState<ScheduleSessionMeta[]>([]);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
-  const [runNowLoading, setRunNowLoading] = useState(false);
+
   const [scheduleDetails, setScheduleDetails] = useState<ScheduledJob | null>(null);
   const [isLoadingSchedule, setIsLoadingSchedule] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
 
-  // Individual loading states for each action to prevent double-clicks
-  const [pauseUnpauseLoading, setPauseUnpauseLoading] = useState(false);
-  const [killJobLoading, setKillJobLoading] = useState(false);
-  const [inspectJobLoading, setInspectJobLoading] = useState(false);
+  const [isActionLoading, setIsActionLoading] = useState(false);
 
-  // Track if we explicitly killed a job to distinguish from natural completion
-  const [jobWasKilled, setJobWasKilled] = useState(false);
+  const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const [isLoadingSession, setIsLoadingSession] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
-  const [selectedSessionDetails, setSelectedSessionDetails] = useState<SessionDetails | null>(null);
-  const [isLoadingSessionDetails, setIsLoadingSessionDetails] = useState(false);
-  const [sessionDetailsError, setSessionDetailsError] = useState<string | null>(null);
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [editApiError, setEditApiError] = useState<string | null>(null);
-  const [isEditSubmitting, setIsEditSubmitting] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const fetchScheduleSessions = useCallback(async (sId: string) => {
-    if (!sId) return;
+  const fetchSessions = async (sId: string) => {
     setIsLoadingSessions(true);
     setSessionsError(null);
     try {
-      const fetchedSessions = await getScheduleSessions(sId, 20);
-      setSessions((prevSessions) => {
-        // Only update if sessions actually changed to prevent unnecessary re-renders
-        if (JSON.stringify(prevSessions) !== JSON.stringify(fetchedSessions)) {
-          return fetchedSessions as ScheduleSessionMeta[];
-        }
-        return prevSessions;
-      });
+      const data = await getScheduleSessions(sId, 20);
+      setSessions(data);
     } catch (err) {
-      console.error('Failed to fetch schedule sessions:', err);
-      setSessionsError(err instanceof Error ? err.message : 'Failed to fetch schedule sessions');
+      setSessionsError(errorMessage(err, 'Failed to fetch sessions'));
     } finally {
       setIsLoadingSessions(false);
     }
-  }, []);
+  };
 
-  const fetchScheduleDetails = useCallback(
-    async (sId: string, isRefresh = false) => {
-      if (!sId) return;
-      if (!isRefresh) setIsLoadingSchedule(true);
-      setScheduleError(null);
-      try {
-        const allSchedules = await listSchedules();
-        const schedule = allSchedules.find((s) => s.id === sId);
-        if (schedule) {
-          setScheduleDetails((prevDetails) => {
-            // Only update if schedule details actually changed
-            if (!prevDetails || JSON.stringify(prevDetails) !== JSON.stringify(schedule)) {
-              // Only reset runNowLoading if we explicitly killed the job
-              if (!schedule.currently_running && runNowLoading && jobWasKilled) {
-                setRunNowLoading(false);
-                setJobWasKilled(false);
-              }
-              return schedule;
-            }
-            return prevDetails;
-          });
-        } else {
-          setScheduleError('Schedule not found');
-        }
-      } catch (err) {
-        console.error('Failed to fetch schedule details:', err);
-        setScheduleError(err instanceof Error ? err.message : 'Failed to fetch schedule details');
-      } finally {
-        if (!isRefresh) setIsLoadingSchedule(false);
+  const fetchSchedule = useCallback(async (sId: string) => {
+    setIsLoadingSchedule(true);
+    setScheduleError(null);
+    try {
+      const allSchedules = await listSchedules();
+      const schedule = allSchedules.find((s) => s.id === sId);
+      if (schedule) {
+        setScheduleDetails(schedule);
+      } else {
+        setScheduleError(intl.formatMessage(i18n.scheduleNotFoundError));
       }
-    },
-    [runNowLoading, jobWasKilled]
-  );
+    } catch (err) {
+      setScheduleError(errorMessage(err, 'Failed to fetch schedule'));
+    } finally {
+      setIsLoadingSchedule(false);
+    }
+  }, [intl]);
 
   useEffect(() => {
-    if (scheduleId && !selectedSessionDetails) {
-      fetchScheduleSessions(scheduleId);
-      fetchScheduleDetails(scheduleId);
-    } else if (!scheduleId) {
-      setSessions([]);
-      setSessionsError(null);
-      setRunNowLoading(false);
-      setSelectedSessionDetails(null);
-      setScheduleDetails(null);
-      setScheduleError(null);
-      setJobWasKilled(false); // Reset kill flag when changing schedules
+    if (scheduleId && !selectedSession) {
+      fetchSessions(scheduleId);
+      fetchSchedule(scheduleId);
     }
-  }, [scheduleId, fetchScheduleSessions, fetchScheduleDetails, selectedSessionDetails]);
+  }, [scheduleId, selectedSession, fetchSchedule]);
 
   const handleRunNow = async () => {
     if (!scheduleId) return;
-    setRunNowLoading(true);
+    setIsActionLoading(true);
     try {
       const newSessionId = await runScheduleNow(scheduleId);
+      trackScheduleRunNow(true);
       if (newSessionId === 'CANCELLED') {
-        toastSuccess({
-          title: 'Job Cancelled',
-          msg: 'The job was cancelled while starting up.',
-        });
+        toastSuccess({ title: intl.formatMessage(i18n.jobCancelled), msg: intl.formatMessage(i18n.jobCancelledMsg) });
       } else {
-        toastSuccess({
-          title: 'Schedule Triggered',
-          msg: `Successfully triggered schedule. New session ID: ${newSessionId}`,
-        });
+        toastSuccess({ title: intl.formatMessage(i18n.scheduleTriggered), msg: intl.formatMessage(i18n.newSession, { sessionId: newSessionId }) });
       }
-      setTimeout(() => {
-        if (scheduleId) {
-          fetchScheduleSessions(scheduleId);
-          fetchScheduleDetails(scheduleId);
-        }
-      }, 1000);
+      await fetchSessions(scheduleId);
+      await fetchSchedule(scheduleId);
     } catch (err) {
-      console.error('Failed to run schedule now:', err);
-      const errorMsg = err instanceof Error ? err.message : 'Failed to trigger schedule';
-      toastError({ title: 'Run Schedule Error', msg: errorMsg });
-    } finally {
-      setRunNowLoading(false);
-    }
-  };
-
-  const handlePauseSchedule = async () => {
-    if (!scheduleId) return;
-    setPauseUnpauseLoading(true);
-    try {
-      await pauseSchedule(scheduleId);
-      toastSuccess({
-        title: 'Schedule Paused',
-        msg: `Successfully paused schedule "${scheduleId}"`,
+      const errorMsg = errorMessage(err, 'Failed to trigger schedule');
+      trackScheduleRunNow(false, getErrorType(err));
+      toastError({
+        title: intl.formatMessage(i18n.runScheduleError),
+        msg: errorMsg,
       });
-      fetchScheduleDetails(scheduleId);
-    } catch (err) {
-      console.error('Failed to pause schedule:', err);
-      const errorMsg = err instanceof Error ? err.message : 'Failed to pause schedule';
-      toastError({ title: 'Pause Schedule Error', msg: errorMsg });
     } finally {
-      setPauseUnpauseLoading(false);
+      setIsActionLoading(false);
     }
   };
 
-  const handleUnpauseSchedule = async () => {
-    if (!scheduleId) return;
-    setPauseUnpauseLoading(true);
+  const handlePauseToggle = async () => {
+    if (!scheduleId || !scheduleDetails) return;
+    setIsActionLoading(true);
     try {
-      await unpauseSchedule(scheduleId);
-      toastSuccess({
-        title: 'Schedule Unpaused',
-        msg: `Successfully unpaused schedule "${scheduleId}"`,
-      });
-      fetchScheduleDetails(scheduleId);
+      if (scheduleDetails.paused) {
+        await unpauseSchedule(scheduleId);
+        toastSuccess({ title: intl.formatMessage(i18n.scheduleUnpaused), msg: intl.formatMessage(i18n.unpausedMsg, { id: scheduleId }) });
+      } else {
+        await pauseSchedule(scheduleId);
+        toastSuccess({ title: intl.formatMessage(i18n.schedulePaused), msg: intl.formatMessage(i18n.pausedMsg, { id: scheduleId }) });
+      }
+      await fetchSchedule(scheduleId);
     } catch (err) {
-      console.error('Failed to unpause schedule:', err);
-      const errorMsg = err instanceof Error ? err.message : 'Failed to unpause schedule';
-      toastError({ title: 'Unpause Schedule Error', msg: errorMsg });
+      const errorMsg = errorMessage(err, 'Operation failed');
+      toastError({
+        title: intl.formatMessage(i18n.pauseUnpauseError),
+        msg: errorMsg,
+      });
     } finally {
-      setPauseUnpauseLoading(false);
+      setIsActionLoading(false);
     }
   };
 
-  const handleOpenEditModal = () => {
-    setEditApiError(null);
-    setIsEditModalOpen(true);
-  };
-
-  const handleCloseEditModal = () => {
-    setIsEditModalOpen(false);
-    setEditApiError(null);
-  };
-
-  const handleKillRunningJob = async () => {
+  const handleKill = async () => {
     if (!scheduleId) return;
-    setKillJobLoading(true);
+    setIsActionLoading(true);
     try {
       const result = await killRunningJob(scheduleId);
-      toastSuccess({
-        title: 'Job Killed',
-        msg: result.message,
-      });
-      // Mark that we explicitly killed this job
-      setJobWasKilled(true);
-      // Clear the runNowLoading state immediately when job is killed
-      setRunNowLoading(false);
-      fetchScheduleDetails(scheduleId);
+      toastSuccess({ title: intl.formatMessage(i18n.jobKilled), msg: result.message });
+      await fetchSchedule(scheduleId);
     } catch (err) {
-      console.error('Failed to kill running job:', err);
-      const errorMsg = err instanceof Error ? err.message : 'Failed to kill running job';
-      toastError({ title: 'Kill Job Error', msg: errorMsg });
+      const errorMsg = errorMessage(err, 'Failed to kill job');
+      toastError({
+        title: intl.formatMessage(i18n.killJobError),
+        msg: errorMsg,
+      });
     } finally {
-      setKillJobLoading(false);
+      setIsActionLoading(false);
     }
   };
 
-  const handleInspectRunningJob = async () => {
+  const handleInspect = async () => {
     if (!scheduleId) return;
-    setInspectJobLoading(true);
+    setIsActionLoading(true);
     try {
       const result = await inspectRunningJob(scheduleId);
       if (result.sessionId) {
@@ -338,147 +233,68 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
           ? `${Math.floor(result.runningDurationSeconds / 60)}m ${result.runningDurationSeconds % 60}s`
           : 'Unknown';
         toastSuccess({
-          title: 'Job Inspection',
+          title: intl.formatMessage(i18n.jobInspection),
           msg: `Session: ${result.sessionId}\nRunning for: ${duration}`,
         });
       } else {
-        toastSuccess({
-          title: 'Job Inspection',
-          msg: 'No detailed information available for this job',
-        });
+        toastSuccess({ title: intl.formatMessage(i18n.jobInspection), msg: intl.formatMessage(i18n.inspectNoInfo) });
       }
     } catch (err) {
-      console.error('Failed to inspect running job:', err);
-      const errorMsg = err instanceof Error ? err.message : 'Failed to inspect running job';
-      toastError({ title: 'Inspect Job Error', msg: errorMsg });
-    } finally {
-      setInspectJobLoading(false);
-    }
-  };
-
-  const handleEditScheduleSubmit = async (cron: string) => {
-    if (!scheduleId) return;
-
-    setIsEditSubmitting(true);
-    setEditApiError(null);
-    try {
-      await updateSchedule(scheduleId, cron);
-      toastSuccess({
-        title: 'Schedule Updated',
-        msg: `Successfully updated schedule "${scheduleId}"`,
-      });
-      fetchScheduleDetails(scheduleId);
-      setIsEditModalOpen(false);
-    } catch (err) {
-      console.error('Failed to update schedule:', err);
-      const errorMsg = err instanceof Error ? err.message : 'Failed to update schedule';
-      setEditApiError(errorMsg);
-      toastError({ title: 'Update Schedule Error', msg: errorMsg });
-    } finally {
-      setIsEditSubmitting(false);
-    }
-  };
-
-  // Optimized periodic refresh for schedule details to keep the running status up to date
-  useEffect(() => {
-    if (!scheduleId) return;
-
-    // Initial fetch
-    fetchScheduleDetails(scheduleId);
-
-    // Set up periodic refresh every 8 seconds (longer to reduce flashing)
-    const intervalId = setInterval(() => {
-      if (
-        scheduleId &&
-        !selectedSessionDetails &&
-        !runNowLoading &&
-        !pauseUnpauseLoading &&
-        !killJobLoading &&
-        !inspectJobLoading &&
-        !isEditSubmitting
-      ) {
-        fetchScheduleDetails(scheduleId, true); // Pass true to indicate this is a refresh
-      }
-    }, 8000);
-
-    // Clean up on unmount or when scheduleId changes
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [
-    scheduleId,
-    fetchScheduleDetails,
-    selectedSessionDetails,
-    runNowLoading,
-    pauseUnpauseLoading,
-    killJobLoading,
-    inspectJobLoading,
-    isEditSubmitting,
-  ]);
-
-  // Monitor schedule state changes and reset loading states appropriately
-  useEffect(() => {
-    if (scheduleDetails) {
-      // Only reset runNowLoading if we explicitly killed the job
-      // This prevents interfering with natural job completion
-      if (!scheduleDetails.currently_running && runNowLoading && jobWasKilled) {
-        setRunNowLoading(false);
-        setJobWasKilled(false); // Reset the flag
-      }
-    }
-  }, [scheduleDetails, runNowLoading, jobWasKilled]);
-
-  const loadAndShowSessionDetails = async (sessionId: string) => {
-    setIsLoadingSessionDetails(true);
-    setSessionDetailsError(null);
-    setSelectedSessionDetails(null);
-    try {
-      const details = await fetchSessionDetails(sessionId);
-      setSelectedSessionDetails(details);
-    } catch (err) {
-      console.error(`Failed to load session details for ${sessionId}:`, err);
-      const errorMsg = err instanceof Error ? err.message : 'Failed to load session details.';
-      setSessionDetailsError(errorMsg);
+      const errorMsg = errorMessage(err, 'Failed to inspect job');
       toastError({
-        title: 'Failed to load session details',
+        title: intl.formatMessage(i18n.inspectJobError),
         msg: errorMsg,
       });
     } finally {
-      setIsLoadingSessionDetails(false);
+      setIsActionLoading(false);
     }
   };
 
-  const handleSessionCardClick = (sessionIdFromCard: string) => {
-    loadAndShowSessionDetails(sessionIdFromCard);
-  };
-
-  const handleResumeViewedSession = () => {
-    if (selectedSessionDetails) {
-      const { session_id, metadata } = selectedSessionDetails;
-      if (metadata.working_dir) {
-        console.log(
-          `Resuming session ID ${session_id} in new chat window. Dir: ${metadata.working_dir}`
-        );
-        window.electron.createChatWindow(undefined, metadata.working_dir, undefined, session_id);
-      } else {
-        console.error('Cannot resume session: working directory is missing.');
-        toastError({ title: 'Cannot Resume Session', msg: 'Working directory is missing.' });
-      }
+  const handleModalSubmit = async (payload: NewSchedulePayload | string) => {
+    if (!scheduleId) return;
+    setIsActionLoading(true);
+    try {
+      await updateSchedule(scheduleId, payload as string);
+      toastSuccess({ title: intl.formatMessage(i18n.scheduleUpdated), msg: intl.formatMessage(i18n.updatedMsg, { id: scheduleId }) });
+      await fetchSchedule(scheduleId);
+      setIsModalOpen(false);
+    } catch (err) {
+      const errorMsg = errorMessage(err, 'Failed to update schedule');
+      toastError({
+        title: intl.formatMessage(i18n.updateScheduleError),
+        msg: errorMsg,
+      });
+    } finally {
+      setIsActionLoading(false);
     }
   };
 
-  if (selectedSessionDetails) {
+  const loadSession = async (sessionId: string) => {
+    setIsLoadingSession(true);
+    setSessionError(null);
+    try {
+      const response = await getSession<true>({
+        path: { session_id: sessionId },
+        throwOnError: true,
+      });
+      setSelectedSession(response.data);
+    } catch (err) {
+      const msg = errorMessage(err, 'Failed to load session');
+      setSessionError(msg);
+      toastError({ title: intl.formatMessage(i18n.failedToLoadSession), msg });
+    } finally {
+      setIsLoadingSession(false);
+    }
+  };
+
+  if (selectedSession) {
     return (
       <SessionHistoryView
-        session={selectedSessionDetails}
-        isLoading={isLoadingSessionDetails}
-        error={sessionDetailsError}
-        onBack={() => {
-          setSelectedSessionDetails(null);
-          setSessionDetailsError(null);
-        }}
-        onResume={handleResumeViewedSession}
-        onRetry={() => loadAndShowSessionDetails(selectedSessionDetails.session_id)}
+        session={selectedSession}
+        isLoading={isLoadingSession}
+        error={sessionError}
+        onBack={() => setSelectedSession(null)}
+        onRetry={() => loadSession(selectedSession.id)}
         showActionButtons={true}
       />
     );
@@ -486,119 +302,166 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
 
   if (!scheduleId) {
     return (
-      <div className="h-screen w-full flex flex-col items-center justify-center bg-app text-textStandard p-8">
-        <MoreMenuLayout showMenu={false} />
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-white dark:bg-gray-900 text-text-primary p-8">
         <BackButton onClick={onNavigateBack} />
-        <h1 className="text-2xl font-medium text-gray-900 dark:text-white mt-4">
-          Schedule Not Found
-        </h1>
-        <p className="text-gray-600 dark:text-gray-400 mt-2">
-          No schedule ID was provided. Please return to the schedules list and select a schedule.
+        <h1 className="text-2xl font-medium text-text-primary mt-4">{intl.formatMessage(i18n.scheduleNotFound)}</h1>
+        <p className="text-text-secondary mt-2">
+          {intl.formatMessage(i18n.noScheduleId)}
         </p>
       </div>
     );
   }
 
+  const readableCron = scheduleDetails
+    ? (() => {
+        try {
+          return cronstrue.toString(scheduleDetails.cron);
+        } catch {
+          return scheduleDetails.cron;
+        }
+      })()
+    : '';
+
   return (
-    <div className="h-screen w-full flex flex-col bg-app text-textStandard">
-      <MoreMenuLayout showMenu={false} />
-      <div className="px-8 pt-6 pb-4 border-b border-borderSubtle flex-shrink-0">
+    <div className="h-screen w-full flex flex-col bg-background-primary text-text-primary">
+      <div className="px-8 pt-6 pb-4 border-b border-border-primary flex-shrink-0">
         <BackButton onClick={onNavigateBack} />
-        <h1 className="text-3xl font-medium text-gray-900 dark:text-white mt-1">
-          Schedule Details
-        </h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Viewing Schedule ID: {scheduleId}
-        </p>
+        <h1 className="text-4xl font-light mt-1 mb-1 pt-8">{intl.formatMessage(i18n.scheduleDetails)}</h1>
+        <p className="text-sm text-text-secondary mb-1">{intl.formatMessage(i18n.viewingScheduleId, { id: scheduleId })}</p>
       </div>
 
       <ScrollArea className="flex-grow">
         <div className="p-8 space-y-6">
           <section>
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-3">
-              Schedule Information
-            </h2>
+            <h2 className="text-xl font-semibold text-text-primary mb-3">{intl.formatMessage(i18n.scheduleInformation)}</h2>
             {isLoadingSchedule && (
-              <div className="flex items-center text-gray-500 dark:text-gray-400">
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading schedule details...
+              <div className="flex items-center text-text-secondary">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> {intl.formatMessage(i18n.loadingSchedule)}
               </div>
             )}
             {scheduleError && (
-              <p className="text-red-500 dark:text-red-400 text-sm p-3 bg-red-100 dark:bg-red-900/30 border border-red-500 dark:border-red-700 rounded-md">
-                Error: {scheduleError}
+              <p className="text-text-danger text-sm p-3 bg-background-danger border border-border-danger rounded-md">
+                {intl.formatMessage(i18n.errorPrefix, { error: scheduleError })}
               </p>
             )}
-            {!isLoadingSchedule && !scheduleError && scheduleDetails && (
-              <ScheduleInfoCard scheduleDetails={scheduleDetails} />
+            {scheduleDetails && (
+              <Card className="p-4 bg-background-primary shadow mb-6">
+                <div className="space-y-2">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between">
+                    <h3 className="text-base font-semibold text-text-primary">
+                      {scheduleDetails.id}
+                    </h3>
+                    <div className="mt-2 md:mt-0 flex items-center gap-2">
+                      {scheduleDetails.currently_running && (
+                        <div className="text-sm text-green-500 dark:text-green-400 font-semibold flex items-center">
+                          <span className="inline-block w-2 h-2 bg-green-500 dark:bg-green-400 rounded-full mr-1 animate-pulse"></span>
+                          {intl.formatMessage(i18n.currentlyRunning)}
+                        </div>
+                      )}
+                      {scheduleDetails.paused && (
+                        <div className="text-sm text-orange-500 dark:text-orange-400 font-semibold flex items-center">
+                          <Pause className="w-3 h-3 mr-1" />
+                          {intl.formatMessage(i18n.paused)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-sm text-text-primary">
+                    <span className="font-semibold">{intl.formatMessage(i18n.scheduleLabel)}</span> {readableCron}
+                  </p>
+                  <p className="text-sm text-text-primary">
+                    <span className="font-semibold">{intl.formatMessage(i18n.cronExpression)}</span> {scheduleDetails.cron}
+                  </p>
+                  <p className="text-sm text-text-primary">
+                    <span className="font-semibold">{intl.formatMessage(i18n.recipeSource)}</span> {scheduleDetails.source}
+                  </p>
+                  <p className="text-sm text-text-primary">
+                    <span className="font-semibold">{intl.formatMessage(i18n.lastRun)}</span>{' '}
+                    {formatToLocalDateWithTimezone(scheduleDetails.last_run)}
+                  </p>
+                  {scheduleDetails.currently_running && scheduleDetails.current_session_id && (
+                    <p className="text-sm text-text-primary">
+                      <span className="font-semibold">{intl.formatMessage(i18n.currentSession)}</span>{' '}
+                      {scheduleDetails.current_session_id}
+                    </p>
+                  )}
+                  {scheduleDetails.currently_running && scheduleDetails.process_start_time && (
+                    <p className="text-sm text-text-primary">
+                      <span className="font-semibold">{intl.formatMessage(i18n.processStarted)}</span>{' '}
+                      {formatToLocalDateWithTimezone(scheduleDetails.process_start_time)}
+                    </p>
+                  )}
+                </div>
+              </Card>
             )}
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-3">Actions</h2>
+            <h2 className="text-xl font-semibold text-text-primary mb-3">{intl.formatMessage(i18n.actions)}</h2>
             <div className="flex flex-col md:flex-row gap-2">
               <Button
                 onClick={handleRunNow}
-                disabled={runNowLoading || scheduleDetails?.currently_running === true}
+                disabled={isActionLoading || scheduleDetails?.currently_running}
                 className="w-full md:w-auto"
               >
-                {runNowLoading ? 'Triggering...' : 'Run Schedule Now'}
+                {intl.formatMessage(i18n.runScheduleNow)}
               </Button>
 
               {scheduleDetails && !scheduleDetails.currently_running && (
                 <>
                   <Button
-                    onClick={handleOpenEditModal}
+                    onClick={() => setIsModalOpen(true)}
                     variant="outline"
                     className="w-full md:w-auto flex items-center gap-2 text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                    disabled={runNowLoading || pauseUnpauseLoading || isEditSubmitting}
+                    disabled={isActionLoading}
                   >
                     <Edit className="w-4 h-4" />
-                    Edit Schedule
+                    {intl.formatMessage(i18n.editSchedule)}
                   </Button>
                   <Button
-                    onClick={scheduleDetails.paused ? handleUnpauseSchedule : handlePauseSchedule}
+                    onClick={handlePauseToggle}
                     variant="outline"
                     className={`w-full md:w-auto flex items-center gap-2 ${
                       scheduleDetails.paused
                         ? 'text-green-600 dark:text-green-400 border-green-300 dark:border-green-600 hover:bg-green-50 dark:hover:bg-green-900/20'
                         : 'text-orange-600 dark:text-orange-400 border-orange-300 dark:border-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/20'
                     }`}
-                    disabled={runNowLoading || pauseUnpauseLoading || isEditSubmitting}
+                    disabled={isActionLoading}
                   >
                     {scheduleDetails.paused ? (
                       <>
                         <Play className="w-4 h-4" />
-                        {pauseUnpauseLoading ? 'Unpausing...' : 'Unpause Schedule'}
+                        {intl.formatMessage(i18n.unpauseSchedule)}
                       </>
                     ) : (
                       <>
                         <Pause className="w-4 h-4" />
-                        {pauseUnpauseLoading ? 'Pausing...' : 'Pause Schedule'}
+                        {intl.formatMessage(i18n.pauseSchedule)}
                       </>
                     )}
                   </Button>
                 </>
               )}
 
-              {scheduleDetails && scheduleDetails.currently_running && (
+              {scheduleDetails?.currently_running && (
                 <>
                   <Button
-                    onClick={handleInspectRunningJob}
+                    onClick={handleInspect}
                     variant="outline"
                     className="w-full md:w-auto flex items-center gap-2 text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                    disabled={inspectJobLoading}
+                    disabled={isActionLoading}
                   >
                     <Eye className="w-4 h-4" />
-                    {inspectJobLoading ? 'Inspecting...' : 'Inspect Running Job'}
+                    {intl.formatMessage(i18n.inspectRunningJob)}
                   </Button>
                   <Button
-                    onClick={handleKillRunningJob}
+                    onClick={handleKill}
                     variant="outline"
                     className="w-full md:w-auto flex items-center gap-2 text-red-600 dark:text-red-400 border-red-300 dark:border-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
-                    disabled={killJobLoading}
+                    disabled={isActionLoading}
                   >
                     <Square className="w-4 h-4" />
-                    {killJobLoading ? 'Killing...' : 'Kill Running Job'}
+                    {intl.formatMessage(i18n.killRunningJob)}
                   </Button>
                 </>
               )}
@@ -606,82 +469,69 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
 
             {scheduleDetails?.currently_running && (
               <p className="text-sm text-amber-600 dark:text-amber-400 mt-2">
-                Cannot trigger or modify a schedule while it's already running.
+                {intl.formatMessage(i18n.cannotModifyRunning)}
               </p>
             )}
 
             {scheduleDetails?.paused && (
               <p className="text-sm text-orange-600 dark:text-orange-400 mt-2">
-                This schedule is paused and will not run automatically. Use "Run Schedule Now" to
-                trigger it manually or unpause to resume automatic execution.
+                {intl.formatMessage(i18n.pausedWarning)}
               </p>
             )}
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-              Recent Sessions for this Schedule
-            </h2>
-            {isLoadingSessions && (
-              <p className="text-gray-500 dark:text-gray-400">Loading sessions...</p>
-            )}
+            <h2 className="text-xl font-semibold text-text-primary mb-4">{intl.formatMessage(i18n.recentSessions)}</h2>
+            {isLoadingSessions && <p className="text-text-secondary">{intl.formatMessage(i18n.loadingSessions)}</p>}
             {sessionsError && (
-              <p className="text-red-500 dark:text-red-400 text-sm p-3 bg-red-100 dark:bg-red-900/30 border border-red-500 dark:border-red-700 rounded-md">
-                Error: {sessionsError}
+              <p className="text-text-danger text-sm p-3 bg-background-danger border border-border-danger rounded-md">
+                {intl.formatMessage(i18n.errorPrefix, { error: sessionsError })}
               </p>
             )}
-            {!isLoadingSessions && !sessionsError && sessions.length === 0 && (
-              <p className="text-gray-500 dark:text-gray-400 text-center py-4">
-                No sessions found for this schedule.
+            {!isLoadingSessions && sessions.length === 0 && (
+              <p className="text-text-secondary text-center py-4">
+                {intl.formatMessage(i18n.noSessions)}
               </p>
             )}
 
-            {!isLoadingSessions && sessions.length > 0 && (
+            {sessions.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {sessions.map((session) => (
                   <Card
                     key={session.id}
-                    className="p-4 bg-white dark:bg-gray-800 shadow cursor-pointer hover:shadow-lg transition-shadow duration-200"
-                    onClick={() => handleSessionCardClick(session.id)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        handleSessionCardClick(session.id);
-                      }
-                    }}
+                    className="p-4 bg-background-primary shadow cursor-pointer hover:shadow-lg transition-shadow duration-200"
+                    onClick={() => loadSession(session.id)}
                   >
                     <h3
-                      className="text-sm font-semibold text-gray-900 dark:text-white truncate"
+                      className="text-sm font-semibold text-text-primary truncate"
                       title={session.name || session.id}
                     >
-                      {session.name || `Session ID: ${session.id}`}{' '}
+                      {session.name || intl.formatMessage(i18n.sessionId, { id: session.id })}
                     </h3>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      Created:{' '}
-                      {session.createdAt ? new Date(session.createdAt).toLocaleString() : 'N/A'}
+                    <p className="text-xs text-text-secondary mt-1">
+                      {intl.formatMessage(i18n.created, { date: session.createdAt ? formatToLocalDateWithTimezone(session.createdAt) : 'N/A' })}
                     </p>
                     {session.messageCount !== undefined && (
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                        Messages: {session.messageCount}
+                      <p className="text-xs text-text-secondary mt-1">
+                        {intl.formatMessage(i18n.messages, { count: session.messageCount })}
                       </p>
                     )}
                     {session.workingDir && (
                       <p
-                        className="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate"
+                        className="text-xs text-text-secondary mt-1 truncate"
                         title={session.workingDir}
                       >
-                        Dir: {session.workingDir}
+                        {intl.formatMessage(i18n.dir, { path: session.workingDir })}
                       </p>
                     )}
                     {session.accumulatedTotalTokens !== undefined &&
                       session.accumulatedTotalTokens !== null && (
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                          Tokens: {session.accumulatedTotalTokens}
+                        <p className="text-xs text-text-secondary mt-1">
+                          {intl.formatMessage(i18n.tokens, { count: session.accumulatedTotalTokens })}
                         </p>
                       )}
-                    <p className="text-xs text-gray-600 dark:text-gray-500 mt-1">
-                      ID: <span className="font-mono">{session.id}</span>
+                    <p className="text-xs text-text-secondary mt-1">
+                      {intl.formatMessage(i18n.idLabel)} <span className="font-mono">{session.id}</span>
                     </p>
                   </Card>
                 ))}
@@ -690,13 +540,15 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
           </section>
         </div>
       </ScrollArea>
-      <EditScheduleModal
-        isOpen={isEditModalOpen}
-        onClose={handleCloseEditModal}
-        onSubmit={handleEditScheduleSubmit}
+
+      <ScheduleModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onSubmit={handleModalSubmit}
         schedule={scheduleDetails}
-        isLoadingExternally={isEditSubmitting}
-        apiErrorExternally={editApiError}
+        isLoadingExternally={isActionLoading}
+        apiErrorExternally={null}
+        initialDeepLink={null}
       />
     </div>
   );

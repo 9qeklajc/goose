@@ -5,7 +5,6 @@ use std::collections::HashMap;
 /// It is the ground truth for init experiments. The experiment names in users' experiment list but not
 /// in the list will be remove from user list; The experiment names in the ground-truth list but not
 /// in users' experiment list will be added to user list with default value false;
-/// TODO: keep this up to date with the experimental-features.md documentation page
 const ALL_EXPERIMENTS: &[(&str, bool)] = &[];
 
 /// Experiment configuration management
@@ -35,7 +34,7 @@ impl ExperimentManager {
         Self::refresh_experiments(&mut experiments);
         experiments.insert(name.to_string(), enabled);
 
-        config.set_param("experiments", serde_json::to_value(experiments)?)?;
+        config.set_param("experiments", experiments)?;
         Ok(())
     }
 

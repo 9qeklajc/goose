@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { GreenCheckButton } from './buttons/CardButtons';
 import { ConfiguredProviderTooltipMessage, ProviderDescription } from './utils/StringUtils';
+import { useIntl } from '../../../../i18n';
 
 interface CardHeaderProps {
   name: string;
@@ -10,7 +11,7 @@ interface CardHeaderProps {
 
 // Make CardTitle a proper React component
 const CardTitle = memo(({ name }: { name: string }) => {
-  return <h3 className="text-base font-medium text-textStandard truncate mr-2">{name}</h3>;
+  return <h3 className="text-base font-medium text-text-primary truncate mr-2">{name}</h3>;
 });
 CardTitle.displayName = 'CardTitle';
 
@@ -21,13 +22,13 @@ interface ProviderNameAndStatusProps {
 }
 
 const ProviderNameAndStatus = memo(({ name, isConfigured }: ProviderNameAndStatusProps) => {
-  // Remove the console.log completely
+  const intl = useIntl();
   return (
     <div className="flex items-center justify-between w-full">
       <CardTitle name={name} />
 
       {/* Configured state: Green check */}
-      {isConfigured && <GreenCheckButton tooltip={ConfiguredProviderTooltipMessage(name)} />}
+      {isConfigured && <GreenCheckButton tooltip={ConfiguredProviderTooltipMessage(intl, name)} />}
     </div>
   );
 });

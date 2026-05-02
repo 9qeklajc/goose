@@ -1,47 +1,58 @@
+use super::api_client::{ApiClient, AuthMethod};
+use super::base::MessageStream;
 use super::errors::ProviderError;
-use crate::message::Message;
-use crate::model::ModelConfig;
-use crate::providers::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage};
-use crate::providers::formats::google::{create_request, get_usage, response_to_message};
-use crate::providers::utils::{
-    emit_debug_trace, handle_response_google_compat, unescape_json_values,
-};
-use anyhow::Result;
-use async_trait::async_trait;
-use mcp_core::tool::Tool;
-use reqwest::Client;
-use serde_json::Value;
-use std::time::Duration;
-use url::Url;
+use super::openai_compatible::{handle_status, map_http_error_to_provider_error};
+use super::retry::ProviderRetry;
+use super::utils::RequestLog;
+use crate::conversation::message::Message;
 
+use crate::model::ModelConfig;
+use crate::providers::base::{ConfigKey, Provider, ProviderDef, ProviderMetadata};
+use crate::providers::formats::google::{create_request, response_to_streaming_message};
+use crate::providers::inventory::{config_secret_value, InventoryIdentityInput};
+use anyhow::Result;
+use async_stream::try_stream;
+use async_trait::async_trait;
+use futures::future::BoxFuture;
+use futures::TryStreamExt;
+use rmcp::model::Tool;
+use serde_json::Value;
+use std::io;
+use tokio::pin;
+use tokio_stream::StreamExt;
+use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::io::StreamReader;
+
+const GOOGLE_PROVIDER_NAME: &str = "google";
 pub const GOOGLE_API_HOST: &str = "https://generativelanguage.googleapis.com";
-pub const GOOGLE_DEFAULT_MODEL: &str = "gemini-2.5-flash";
+pub const GOOGLE_DEFAULT_MODEL: &str = "gemini-2.5-pro";
+pub const GOOGLE_DEFAULT_FAST_MODEL: &str = "gemini-2.5-flash";
 pub const GOOGLE_KNOWN_MODELS: &[&str] = &[
-    // Gemini 2.5 models (latest generation)
+    // Gemini 3 models
+    "gemini-3-pro-preview",
+    "gemini-3-pro-image-preview",
+    // Gemini 2.5 Pro models
     "gemini-2.5-pro",
-    "gemini-2.5-pro-preview-06-05",
-    "gemini-2.5-pro-preview-05-06",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-preview-05-20",
-    "gemini-2.5-flash-lite-preview-06-17",
-    "gemini-2.5-flash-preview-native-audio-dialog",
-    "gemini-2.5-flash-exp-native-audio-thinking-dialog",
-    "gemini-2.5-flash-preview-tts",
     "gemini-2.5-pro-preview-tts",
-    // Gemini 2.0 models
+    // Gemini 2.5 Flash models
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-preview-09-2025",
+    "gemini-2.5-flash-image",
+    "gemini-2.5-flash-image-preview",
+    "gemini-2.5-flash-native-audio-preview-09-2025",
+    "gemini-2.5-flash-preview-tts",
+    // Gemini 2.5 Flash-Lite models
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash-lite-preview-09-2025",
+    // Gemini 2.0 Flash models
     "gemini-2.0-flash",
+    "gemini-2.0-flash-001",
     "gemini-2.0-flash-exp",
     "gemini-2.0-flash-preview-image-generation",
+    "gemini-2.0-flash-live-001",
+    // Gemini 2.0 Flash-Lite models
     "gemini-2.0-flash-lite",
-    // Gemini 1.5 models
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-flash-002",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-flash-8b-latest",
-    "gemini-1.5-pro",
-    "gemini-1.5-pro-latest",
-    "gemini-1.5-pro-002",
+    "gemini-2.0-flash-lite-001",
 ];
 
 pub const GOOGLE_DOC_URL: &str = "https://ai.google.dev/gemini-api/docs/models";
@@ -49,163 +60,185 @@ pub const GOOGLE_DOC_URL: &str = "https://ai.google.dev/gemini-api/docs/models";
 #[derive(Debug, serde::Serialize)]
 pub struct GoogleProvider {
     #[serde(skip)]
-    client: Client,
-    host: String,
-    api_key: String,
+    api_client: ApiClient,
     model: ModelConfig,
-}
-
-impl Default for GoogleProvider {
-    fn default() -> Self {
-        let model = ModelConfig::new(GoogleProvider::metadata().default_model);
-        GoogleProvider::from_env(model).expect("Failed to initialize Google provider")
-    }
+    #[serde(skip)]
+    name: String,
 }
 
 impl GoogleProvider {
-    pub fn from_env(model: ModelConfig) -> Result<Self> {
+    pub async fn from_env(model: ModelConfig) -> Result<Self> {
+        let model = model.with_fast(GOOGLE_DEFAULT_FAST_MODEL, GOOGLE_PROVIDER_NAME)?;
+
         let config = crate::config::Config::global();
         let api_key: String = config.get_secret("GOOGLE_API_KEY")?;
         let host: String = config
             .get_param("GOOGLE_HOST")
             .unwrap_or_else(|_| GOOGLE_API_HOST.to_string());
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(600))
-            .build()?;
+        let auth = AuthMethod::ApiKey {
+            header_name: "x-goog-api-key".to_string(),
+            key: api_key,
+        };
+
+        let api_client =
+            ApiClient::new(host, auth)?.with_header("Content-Type", "application/json")?;
 
         Ok(Self {
-            client,
-            host,
-            api_key,
+            api_client,
             model,
+            name: GOOGLE_PROVIDER_NAME.to_string(),
         })
     }
 
-    async fn post(&self, payload: Value) -> Result<Value, ProviderError> {
-        let base_url = Url::parse(&self.host)
-            .map_err(|e| ProviderError::RequestFailed(format!("Invalid base URL: {e}")))?;
-
-        let url = base_url
-            .join(&format!(
-                "v1beta/models/{}:generateContent?key={}",
-                self.model.model_name, self.api_key
-            ))
-            .map_err(|e| {
-                ProviderError::RequestFailed(format!("Failed to construct endpoint URL: {e}"))
-            })?;
-
-        let max_retries = 3;
-        let mut retries = 0;
-        let base_delay = Duration::from_secs(2);
-
-        loop {
-            let response = self
-                .client
-                .post(url.clone()) // Clone the URL for each retry
-                .header("CONTENT_TYPE", "application/json")
-                .json(&payload)
-                .send()
-                .await;
-
-            match response {
-                Ok(res) => {
-                    match handle_response_google_compat(res).await {
-                        Ok(result) => return Ok(result),
-                        Err(ProviderError::RateLimitExceeded(_)) => {
-                            retries += 1;
-                            if retries > max_retries {
-                                return Err(ProviderError::RateLimitExceeded(
-                                    "Max retries exceeded for rate limit error".to_string(),
-                                ));
-                            }
-
-                            let delay = 2u64.pow(retries);
-                            let total_delay = Duration::from_secs(delay) + base_delay;
-
-                            println!("Rate limit hit. Retrying in {:?}", total_delay);
-                            tokio::time::sleep(total_delay).await;
-                            continue;
-                        }
-                        Err(err) => return Err(err), // Other errors
-                    }
-                }
-                Err(err) => {
-                    return Err(ProviderError::RequestFailed(format!(
-                        "Request failed: {}",
-                        err
-                    )));
-                }
-            }
-        }
+    async fn post_stream(
+        &self,
+        session_id: Option<&str>,
+        model_name: &str,
+        payload: &Value,
+    ) -> Result<reqwest::Response, ProviderError> {
+        let path = format!("v1beta/models/{}:streamGenerateContent?alt=sse", model_name);
+        let response = self
+            .api_client
+            .response_post(session_id, &path, payload)
+            .await?;
+        handle_status(response).await
     }
 }
 
-#[async_trait]
-impl Provider for GoogleProvider {
+impl ProviderDef for GoogleProvider {
+    type Provider = Self;
+
     fn metadata() -> ProviderMetadata {
         ProviderMetadata::new(
-            "google",
-            "Google Gemini",
+            GOOGLE_PROVIDER_NAME,
+            "Google Gemini (API Key)",
             "Gemini models from Google AI",
             GOOGLE_DEFAULT_MODEL,
             GOOGLE_KNOWN_MODELS.to_vec(),
             GOOGLE_DOC_URL,
             vec![
-                ConfigKey::new("GOOGLE_API_KEY", true, true, None),
-                ConfigKey::new("GOOGLE_HOST", false, false, Some(GOOGLE_API_HOST)),
+                ConfigKey::new("GOOGLE_API_KEY", true, true, None, true),
+                ConfigKey::new("GOOGLE_HOST", false, false, Some(GOOGLE_API_HOST), false),
             ],
         )
+        .with_setup_steps(vec![
+            "Go to https://aistudio.google.com and sign in with your Google account",
+            "Click 'Get API key' on the left sidebar",
+            "Create a new API key or select an existing one",
+            "Copy the key and paste it above",
+        ])
+    }
+
+    fn from_env(
+        model: ModelConfig,
+        _extensions: Vec<crate::config::ExtensionConfig>,
+    ) -> BoxFuture<'static, Result<Self::Provider>> {
+        Box::pin(Self::from_env(model))
+    }
+
+    fn supports_inventory_refresh() -> bool {
+        true
+    }
+
+    fn inventory_identity() -> Result<InventoryIdentityInput> {
+        let config = crate::config::Config::global();
+        let mut identity = InventoryIdentityInput::new(GOOGLE_PROVIDER_NAME, GOOGLE_PROVIDER_NAME)
+            .with_public(
+                "host",
+                config
+                    .get_param::<String>("GOOGLE_HOST")
+                    .unwrap_or_else(|_| GOOGLE_API_HOST.to_string()),
+            );
+
+        if let Some(api_key) = config_secret_value(config, "GOOGLE_API_KEY") {
+            identity = identity.with_secret("api_key", api_key);
+        }
+
+        Ok(identity)
+    }
+}
+
+#[async_trait]
+impl Provider for GoogleProvider {
+    fn get_name(&self) -> &str {
+        &self.name
     }
 
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }
 
-    #[tracing::instrument(
-        skip(self, system, messages, tools),
-        fields(model_config, input, output, input_tokens, output_tokens, total_tokens)
-    )]
-    async fn complete(
-        &self,
-        system: &str,
-        messages: &[Message],
-        tools: &[Tool],
-    ) -> Result<(Message, ProviderUsage), ProviderError> {
-        let payload = create_request(&self.model, system, messages, tools)?;
+    async fn fetch_supported_models(&self) -> Result<Vec<String>, ProviderError> {
+        let response = self
+            .api_client
+            .request(None, "v1beta/models")
+            .response_get()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let payload = serde_json::from_str::<serde_json::Value>(&body).ok();
+            return Err(map_http_error_to_provider_error(status, payload));
+        }
 
-        // Make request
-        let response = self.post(payload.clone()).await?;
-
-        // Parse response
-        let message = response_to_message(unescape_json_values(&response))?;
-        let usage = get_usage(&response)?;
-        let model = match response.get("modelVersion") {
-            Some(model_version) => model_version.as_str().unwrap_or_default().to_string(),
-            None => self.model.model_name.clone(),
-        };
-        emit_debug_trace(&self.model, &payload, &response, &usage);
-        let provider_usage = ProviderUsage::new(model, usage);
-        Ok((message, provider_usage))
-    }
-
-    /// Fetch supported models from Google Generative Language API; returns Err on failure, Ok(None) if not present
-    async fn fetch_supported_models_async(&self) -> Result<Option<Vec<String>>, ProviderError> {
-        // List models via the v1beta/models endpoint
-        let url = format!("{}/v1beta/models?key={}", self.host, self.api_key);
-        let response = self.client.get(&url).send().await?;
         let json: serde_json::Value = response.json().await?;
-        // If 'models' field missing, return None
-        let arr = match json.get("models").and_then(|v| v.as_array()) {
-            Some(arr) => arr,
-            None => return Ok(None),
-        };
+        let arr = json
+            .get("models")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                ProviderError::RequestFailed(
+                    "Missing 'models' array in Google models response".to_string(),
+                )
+            })?;
         let mut models: Vec<String> = arr
             .iter()
             .filter_map(|m| m.get("name").and_then(|v| v.as_str()))
             .map(|name| name.split('/').next_back().unwrap_or(name).to_string())
             .collect();
         models.sort();
-        Ok(Some(models))
+        Ok(models)
+    }
+
+    async fn stream(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let payload = create_request(model_config, system, messages, tools)?;
+        let mut log = RequestLog::start(model_config, &payload)?;
+
+        let response = self
+            .with_retry(|| async {
+                self.post_stream(Some(session_id), &model_config.model_name, &payload)
+                    .await
+            })
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
+
+        let stream = response.bytes_stream().map_err(io::Error::other);
+
+        Ok(Box::pin(try_stream! {
+            let stream_reader = StreamReader::new(stream);
+            let framed = FramedRead::new(stream_reader, LinesCodec::new())
+                .map_err(anyhow::Error::from);
+
+            let message_stream = response_to_streaming_message(framed);
+            pin!(message_stream);
+            while let Some(message) = message_stream.next().await {
+                let (message, usage) = message.map_err(|e|
+                    ProviderError::RequestFailed(format!("Stream decode error: {}", e))
+                )?;
+                if message.is_some() || usage.is_some() {
+                    log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
+                }
+                yield (message, usage);
+            }
+        }))
     }
 }

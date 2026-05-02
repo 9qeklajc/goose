@@ -9,6 +9,10 @@ pub struct Settings {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(default = "default_tls")]
+    pub tls: bool,
+    pub tls_cert_path: Option<String>,
+    pub tls_key_path: Option<String>,
 }
 
 impl Settings {
@@ -28,6 +32,7 @@ impl Settings {
             // Server defaults
             .set_default("host", default_host())?
             .set_default("port", default_port())?
+            .set_default("tls", default_tls())?
             // Layer on the environment variables
             .add_source(
                 Environment::with_prefix("GOOSE")
@@ -74,6 +79,10 @@ fn default_port() -> u16 {
     3000
 }
 
+fn default_tls() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +92,9 @@ mod tests {
         let server_settings = Settings {
             host: "127.0.0.1".to_string(),
             port: 3000,
+            tls: true,
+            tls_cert_path: None,
+            tls_key_path: None,
         };
         let addr = server_settings.socket_addr();
         assert_eq!(addr.to_string(), "127.0.0.1:3000");

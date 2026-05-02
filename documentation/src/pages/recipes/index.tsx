@@ -17,19 +17,18 @@ export default function RecipePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const recipesPerPage = 20;
-
-  const uniqueCategories = Array.from(
-    new Set(recipes.map((r) => r.category?.toLowerCase()).filter(Boolean))
-  ).map((category) => ({
-    label: category.replace(/\b\w/g, (l) => l.toUpperCase()),
-    value: category
-  }));
+  const recipesPerPage = 10;
 
   const uniqueExtensions = Array.from(
-    new Set(recipes.flatMap((r) =>
-      r.extensions.map((ext) => ext.toLowerCase().replace(/\s+/g, "-"))
-    ))
+    new Set(
+      recipes.flatMap((r) =>
+        r.extensions?.length
+          ? r.extensions.map((ext) =>
+              (typeof ext === "string" ? ext : ext.name).toLowerCase().replace(/\s+/g, "-")
+            )
+          : []
+      )
+    )
   ).map((ext) => {
     const cleanValue = ext.replace(/-mcp$/, "");
     let label = cleanValue.replace(/-/g, " ");
@@ -46,10 +45,6 @@ export default function RecipePage() {
 
   const sidebarFilterGroups: SidebarFilterGroup[] = [
     {
-      title: "Category",
-      options: uniqueCategories
-    },
-    {
       title: "Extensions Used",
       options: uniqueExtensions
     }
@@ -63,8 +58,7 @@ export default function RecipePage() {
         const results = await searchRecipes(searchQuery);
         setRecipes(results);
       } catch (err) {
-        const errorMessage =
-          err instanceof Error ? err.message : "Unknown error";
+        const errorMessage = err instanceof Error ? err.message : "Unknown error";
         setError(`Failed to load recipes: ${errorMessage}`);
         console.error("Error loading recipes:", err);
       } finally {
@@ -81,13 +75,11 @@ export default function RecipePage() {
   Object.entries(selectedFilters).forEach(([group, values]) => {
     if (values.length > 0) {
       filteredRecipes = filteredRecipes.filter((r) => {
-        if (group === "Category") {
-          return values.includes(r.category?.toLowerCase());
-        }
         if (group === "Extensions Used") {
-          return r.extensions?.some((ext) =>
-            values.includes(ext.toLowerCase().replace(/\s+/g, "-"))
-          );
+          return r.extensions?.some((ext) => {
+            const extName = typeof ext === "string" ? ext : ext.name;
+            return values.includes(extName.toLowerCase().replace(/\s+/g, "-"));
+          }) ?? false;
         }
         return true;
       });
@@ -103,7 +95,7 @@ export default function RecipePage() {
               Recipes Cookbook
             </h1>
             <Button
-              onClick={() => window.open('https://github.com/block/goose/issues/new?template=submit-recipe.yml', '_blank')}
+              onClick={() => window.open('https://github.com/aaif-goose/goose/blob/main/CONTRIBUTING_RECIPES.md', '_blank')}
               className="bg-purple-600 hover:bg-purple-700 text-white flex items-center gap-2 cursor-pointer"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -113,9 +105,9 @@ export default function RecipePage() {
             </Button>
           </div>
           <p className="text-textProminent">
-            Save time and skip setup — launch any{" "}
-            <Link to="/docs/guides/session-recipes" className="text-purple-600 hover:underline">
-              Goose agent recipe
+            Save time and skip setup. Launch any{" "}
+            <Link to="/docs/guides/recipes/session-recipes" className="text-purple-600 hover:underline">
+              goose recipe
             </Link>{" "}
             shared by the community with a single click.
           </p>

@@ -1,27 +1,31 @@
 ---
 title: Speech Extension
-description: Add Speech MCP Server as a Goose Extension
+description: Add Speech MCP Server as a goose Extension
+unlisted: true
 ---
+
+Unlist per https://github.com/aaif-goose/goose/issues/5431
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import YouTubeShortEmbed from '@site/src/components/YouTubeShortEmbed';
+import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
 
 <YouTubeShortEmbed videoUrl="https://youtube.com/embed/rurAp_WzOiY" />
 
 
-This tutorial covers how to add the [Speech MCP Server](https://github.com/Kvadratni/speech-mcp) as a Goose extension to enable real-time voice interaction, audio/video transcription, text-to-speech conversion, and multi-speaker audio generation.
+This tutorial covers how to add the [Speech MCP Server](https://github.com/Kvadratni/speech-mcp) as a goose extension to enable real-time voice interaction, audio/video transcription, text-to-speech conversion, and multi-speaker audio generation.
 
 :::info Requirement
 [PortAudio](https://github.com/GoogleCloudPlatform/python-docs-samples/blob/main/scripts/readme-gen/templates/install_portaudio.tmpl.rst#install-portaudio) is required for PyAudio to capture audio from your microphone
 :::
 
-:::tip TLDR
+:::tip Quick Install
 <Tabs groupId="interface">
-  <TabItem value="ui" label="Goose Desktop" default>
-  [Launch the installer](goose://extension?cmd=uvx&&arg=-p&arg=3.10.14&arg=speech-mcp@latest&id=speech_mcp&name=Speech%20Interface&description=Voice%20interaction%20with%20audio%20visualization%20for%20Goose)
+  <TabItem value="ui" label="goose Desktop" default>
+  [Launch the installer](goose://extension?cmd=uvx&arg=-p&arg=3.10.14&arg=speech-mcp@latest&id=speech_mcp&name=Speech%20Interface&description=Voice%20interaction%20with%20audio%20visualization%20for%20goose)
   </TabItem>
-  <TabItem value="cli" label="Goose CLI">
+  <TabItem value="cli" label="goose CLI">
   **Command**
   ```sh
   uvx -p 3.10.14 speech-mcp@latest
@@ -39,13 +43,16 @@ Before adding this extension, make sure [PortAudio](https://github.com/GoogleClo
 :::
 
 <Tabs groupId="interface">
-  <TabItem value="ui" label="Goose Desktop" default>
-  1. [Launch the installer](goose://extension?cmd=uvx&&arg=-p&arg=3.10.14&arg=speech-mcp@latest&id=speech_mcp&name=Speech%20Interface&description=Voice%20interaction%20with%20audio%20visualization%20for%20Goose)
-  2. Press `Yes` to confirm the installation
-  3. Click `Save Configuration`
-  4. Scroll to the top and click `Exit` from the upper left corner
+  <TabItem value="ui" label="goose Desktop" default>
+  <GooseDesktopInstaller
+    extensionId="speech_mcp"
+    extensionName="Speech Interface"
+    description="Voice interaction with audio visualization for goose"
+    command="uvx"
+    args={["-p", "3.10.14", "speech-mcp@latest"]}
+  />
   </TabItem>
-  <TabItem value="cli" label="Goose CLI">
+  <TabItem value="cli" label="goose CLI">
   1. Run the `configure` command:
   ```sh
   goose configure
@@ -62,8 +69,8 @@ Before adding this extension, make sure [PortAudio](https://github.com/GoogleClo
     │  ○ Built-in Extension 
     // highlight-start    
     │  ● Command-line Extension (Run a local command or script)
-    // highlight-end    
-    │  ○ Remote Extension 
+    // highlight-end
+    │  ○ Remote Extension (Streamable HTTP) 
     └ 
   ```
 
@@ -104,7 +111,7 @@ Before adding this extension, make sure [PortAudio](https://github.com/GoogleClo
     └ 
   ```  
 
-  5. Enter the number of seconds Goose should wait for actions to complete before timing out. Default is 300s
+  5. Enter the number of seconds goose should wait for actions to complete before timing out. Default is 300s
    ```sh
     ┌   goose-configure 
     │
@@ -188,16 +195,16 @@ Before adding this extension, make sure [PortAudio](https://github.com/GoogleClo
 
 
 ## Example Usage
-In this example, you'll see how to use Goose with the Speech MCP Server Extension to turn voice commands into code. By speaking directly to Goose, you can launch the speech interface, give a spoken prompt, and have Goose generate and open a webpage based on your request.
+In this example, you'll see how to use goose with the Speech MCP Server Extension to turn voice commands into code. By speaking directly to goose, you can launch the speech interface, give a spoken prompt, and have goose generate and open a webpage based on your request.
 
-This allows you to build with Goose hands-free, making development more accessible and interactive.
+This allows you to build with goose hands-free, making development more accessible and interactive.
 
 <Tabs groupId="interface">
-  <TabItem value="ui" label="Goose Desktop" default>
-   1. Open a new session in Goose Desktop
+  <TabItem value="ui" label="goose Desktop" default>
+   1. Open a new session in goose Desktop
   </TabItem>
-  <TabItem value="cli" label="Goose CLI">
-  1. Open a terminal and start a new Goose session:
+  <TabItem value="cli" label="goose CLI">
+  1. Open a terminal and start a new goose session:
 
   ```sh
   goose session
@@ -206,34 +213,34 @@ This allows you to build with Goose hands-free, making development more accessib
   </TabItem>
 </Tabs>
 
-### Goose Prompt
+### goose Prompt
 Here are some things you can say to activate the speech interface:
 
-- “Goose, I don’t feel like typing today.”
+- “goose, I don’t feel like typing today.”
 - “Let’s talk using voice.”
 - “Can we have a voice conversation?”
 - “I’d like to speak instead of typing.”
-- “Goose, launch the speech UI.”
+- “goose, launch the speech UI.”
 
 ```
-Goose I don't feel like talking today
+goose I don't feel like talking today
 ```
-### Goose Output
+### goose Output
 ```
 I understand! In that case, I can help you use voice commands instead. I'll launch the speech interface so you can speak your requests rather than type them
 
 ---- Launch Speech UI ----
 ```
 
-### Goose Speech 🎙️
+### goose Speech 🎙️
 
-**Goose:** 
+**goose:** 
 >_I've launched the speech interface. You can now speak your requests instead of typing. Just speak after you hear my voice and see the microphone activate. What would you like help with?_
 
 
 **Max:** 
 
->_Goose, lets create a simple page with the word 'vibes' on it and maybe change colors and make it move around the page and then open this page in the browser once you're done_
+>_goose, lets create a simple page with the word 'vibes' on it and maybe change colors and make it move around the page and then open this page in the browser once you're done_
 
 
 <div style={{ width: "100%", height: 0, position: "relative", paddingBottom: "56.25%" }}>

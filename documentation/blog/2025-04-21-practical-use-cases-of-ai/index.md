@@ -9,7 +9,7 @@ authors:
 
 "Stop using AI," reads yet another viral post. I get it. It's frustrating to review a colleague's auto-generated work, filled with AI's classic giveaways like generic code comments and phrases like "In today's fast-paced world..."
 
-Still, AI plays a pivotal role in my career. I don't rely on AI to do my work, but I use it to help me brainstorm and work more effciently. 
+Still, AI plays a pivotal role in my career. I don't rely on AI to do my work, but I use it to help me brainstorm and work more efficiently. 
 The introduction of [Model Context Protocol (MCP)](https://modelcontextprotocol.io) has made this even easier. MCP is an open standard that gives AI tools the context they need to be useful in the real world. It enables AI agents to interact with APIs, apps, and systems in a structured way. I use [Codename goose](/), an open source AI agent built on MCP.
 
 Here are 11 real ways I use AI Agents without sacrificing authenticity, creativity, or quality:
@@ -132,7 +132,7 @@ SQL can get complex with joins, stored procedures, and subqueries. Goose helps m
 ### How to Try It
 
 1. Follow [this tutorial](/docs/mcp/postgres-mcp)
-2. Enable the [`PostgreSQL`](https://github.com/modelcontextprotocol/servers/tree/HEAD/src/postgres) and [`Developer`](/extensions/detail?id=developer) extensions
+2. Enable the [`PostgreSQL`](https://github.com/bytebase/dbhub/) and [`Developer`](/extensions/detail?id=developer) extensions
 3. Prompt Goose:
    > Find my top 3 blog posts by average weekly views over the past 90 days. Include title, URL, average weekly views, and whether they were promoted on social.
 
@@ -223,9 +223,9 @@ Legal documents are often dense and repetitive. Goose can highlight what actuall
 2. Prompt Goose:
    > Highlight the differences between these two versions of FinCEN's Investment Adviser AML regulations:
    >
-   > Proposed version (2015): https://www.federalregister.gov/documents/2015/09/01/2015-21318
+   > Proposed version (2015): https://www.federalregister.gov/documents/2015/09/01/2015-21318/anti-money-laundering-program-and-suspicious-activity-report-filing-requirements-for-registered
    > 
-   > Final version (2024): https://www.federalregister.gov/documents/2024/09/04/2024-19260
+   > Final version (2024): https://www.federalregister.gov/documents/2024/09/04/2024-19260/financial-crimes-enforcement-network-anti-money-launderingcountering-the-financing-of-terrorism
    >
    > Focus on key changes in requirements for investment advisers' AML/CFT programs and how they affect compliance obligations.
 
@@ -264,18 +264,18 @@ This blog post included just a few of the ways I use Goose. If you're curious ab
 
 What are 5 useful things you can help me with today?
 
-Let Goose surprise you. ✨
+Let goose surprise you. ✨
 
 
 <head>
   <meta property="og:title" content="11 Practical Ways I Use AI Agents Without Losing My Authenticity" />
   <meta property="og:type" content="article" />
-  <meta property="og:url" content="https://block.github.io/goose/blog/2025/04/21/practical-use-cases-of-ai" />
+  <meta property="og:url" content="https://goose-docs.ai/blog/2025/04/21/practical-use-cases-of-ai" />
   <meta property="og:description" content="From conference planning to prepping podcasts, here's how I use AI Agents built on MCP for everyday tasks." />
-  <meta property="og:image" content="https://block.github.io/goose/assets/images/mcp-use-cases-758ecc959d6334783257fc9d6329e1f2.png" />
+  <meta property="og:image" content="https://goose-docs.ai/assets/images/mcp-use-cases-758ecc959d6334783257fc9d6329e1f2.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta property="twitter:domain" content="block.github.io/goose" />
+  <meta property="twitter:domain" content="goose-docs.ai" />
   <meta name="twitter:title" content="11 Practical Ways I Use AI Agents Without Losing My Authenticity" />
   <meta name="twitter:description" content="From conference planning to prepping podcasts, here's how I use AI Agents built on MCP for everyday tasks." />
-  <meta name="twitter:image" content="https://block.github.io/goose/assets/images/mcp-use-cases-758ecc959d6334783257fc9d6329e1f2.png" />
+  <meta name="twitter:image" content="https://goose-docs.ai/assets/images/mcp-use-cases-758ecc959d6334783257fc9d6329e1f2.png" />
 </head>

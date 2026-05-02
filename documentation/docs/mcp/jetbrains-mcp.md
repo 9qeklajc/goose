@@ -1,119 +1,137 @@
 ---
 title: JetBrains Extension
-description: Use JetBrains MCP Server as a Goose Extension
+description: Use JetBrains MCP Server as a goose Extension
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import YouTubeShortEmbed from '@site/src/components/YouTubeShortEmbed';
+import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
+import { PanelLeft } from 'lucide-react';
 
 <YouTubeShortEmbed videoUrl="https://www.youtube.com/embed/1fP5elf9qQM" />
 
-The JetBrains extension is designed to work within your IDE. Goose can accomplish a lot of the developer-centric tasks with the Developer extension that is enabled on install, however, the JetBrains extension provides a more integrated and project-aware way to work with code.
-
-This tutorial covers how to enable and use the JetBrains MCP Server as a built-in Goose extension to integrate with any JetBrains IDE.
+This tutorial covers how to add the JetBrains extension to integrate with any JetBrains IDE. While goose can use the [Developer extension](/docs/mcp/developer-mcp) for developer-centric tasks, the JetBrains extension provides a more integrated and project-aware way to work with code.
 
 ## Configuration
 
-1. Add the [MCP Server plugin](https://plugins.jetbrains.com/plugin/26071-mcp-server) to your IDE.
+**Important**: The configuration steps depend on your IDE version. You can find the version in `[IDE Name] > About` (macOS) or `Help > About` (Windows/Linux).
 
-2. Enable built-in Goose extension:
+<Tabs groupId="ideVersion">
+  <TabItem value="2026.1" label="2026.1 and later" default>
 
-<Tabs groupId="interface">
-  <TabItem value="ui" label="Goose Desktop" default>
-  1. Click `...` in the upper right corner
-  2. Click `Advanced Settings`
-  3. Under `Extensions`, toggle `Jetbrains` to on.
+    Versions 2026.1 and later expose a streamable HTTP endpoint directly. No plugin install or npm required.
+
+    :::tip Quick Install
+    <Tabs groupId="interface">
+      <TabItem value="ui" label="goose Desktop" default>
+      Use `Add custom extension` in Settings → Extensions with the URL from `Copy HTTP Stream Config` in your IDE.
+      </TabItem>
+      <TabItem value="cli" label="goose CLI">
+      Use `goose configure` with the URL from `Copy HTTP Stream Config` in your IDE.
+      </TabItem>
+    </Tabs>
+    :::
+
+    <br/>
+    Configure the extension using your IDE's built-in HTTP stream endpoint:
+
+    1. Get your IDE-specific URL:
+
+       1. Go to `Settings > Tools > MCP Server` in your IDE
+       2. Check `Enable MCP Server` and confirm the permissions dialog if shown
+       3. Click `Copy HTTP Stream Config`
+       4. Note the `url` value (e.g. `http://127.0.0.1:64344/stream`) — the port is auto-assigned and varies per IDE instance
+
+    2. Add the JetBrains extension to goose using the URL from the config:
+
+       <Tabs groupId="interface">
+         <TabItem value="ui" label="goose Desktop" default>
+           1. Click the <PanelLeft className="inline" size={16} /> button in the top-left to open the sidebar
+           2. Click `Extensions` on the sidebar
+           3. Click `Add custom extension`
+           4. On the `Add custom extension` modal, enter the following:
+              - **Extension Name**: JetBrains
+              - **Type**: Streamable HTTP
+              - **Description**: Integrate goose with any JetBrains IDE
+              - **URL**: Paste the `url` from `Copy HTTP Stream Config`
+           5. Click `Add Extension` to save the extension
+           6. Navigate to the chat
+         </TabItem>
+         <TabItem value="cli" label="goose CLI">
+           <CLIExtensionInstructions
+             name="jetbrains"
+             description="Integrate goose with any JetBrains IDE"
+             type="http"
+             url="http://127.0.0.1:<PORT>/stream"
+             timeout={300}
+             commandNote={
+               <>
+                 Paste the <code>url</code> from <code>Copy HTTP Stream Config</code>. The port varies per IDE instance.
+               </>
+             }
+           />
+         </TabItem>
+       </Tabs>
   </TabItem>
-  <TabItem value="cli" label="Goose CLI">
+  <TabItem value="2025.2" label="2025.2 – 2025.x">
 
-  1. Run the `configure` command:
-  ```sh
-  goose configure
-  ```
+    Versions 2025.2 through 2025.x have built-in MCP server support using stdio transport. See your IDE's documentation for more details (e.g. [MCP Server](https://www.jetbrains.com/help/idea/mcp-server.html) for IntelliJ IDEA).
 
-  2. Choose to add a `Built-in Extension`
-  ```sh
-  ┌   goose-configure 
-  │
-  ◇  What would you like to configure?
-  │  Add Extension (Connect to a new extension) 
-  │
-  ◆  What type of extension would you like to add?
-  // highlight-start    
-  │  ● Built-in Extension (Use an extension that comes with Goose)
-  // highlight-end  
-  │  ○ Command-line Extension 
-  │  ○ Remote Extension 
-  └  
-  ```
+    :::tip Quick Install
+    <Tabs groupId="interface">
+      <TabItem value="ui" label="goose Desktop" default>
+      Use `Add custom extension` in Settings → Extensions with the command from `Copy Stdio Config` in your IDE.
+      </TabItem>
+      <TabItem value="cli" label="goose CLI">
+      Use `goose configure` with the command from `Copy Stdio Config` in your IDE.
+      </TabItem>
+    </Tabs>
+    :::
 
-  3. Arrow down to the `JetBrains` extension and press Enter
-  ```sh
-  ┌   goose-configure 
-  │
-  ◇  What would you like to configure?
-  │  Add Extension (Connect to a new extension) 
-  │
-  ◇  What type of extension would you like to add?
-  │  Built-in Extension 
-  │
-  ◆  Which built-in extension would you like to enable?
-  │  ○ Developer Tools 
-  │  ○ Computer Controller 
-  │  ○ Google Drive 
-  │  ○ Memory 
-  // highlight-start
-  │  ● JetBrains (Connect to jetbrains IDEs)
-  // highlight-end
-  └
-  ```
+    <br/>
+    Configure the extension using your IDE's built-in MCP server support:
 
-  4. Enter the number of seconds Goose should wait for actions to complete before timing out. Default is 300s
+    1. Get your IDE-specific config:
 
-  ```sh
-  ┌   goose-configure 
-  │
-  ◇  What would you like to configure?
-  │  Add Extension (Connect to a new extension) 
-  │
-  ◇  What type of extension would you like to add?
-  │  Built-in Extension 
-  │
-  ◇  Which built-in extension would you like to enable?
-  │  JetBrains
-  │
-  // highlight-start
-  ◆  Please set the timeout for this tool (in secs):
-  │  300
-  // highlight-end
-  │
-  └  Enabled jetbrains extension
-  ```
+       1. Go to `Settings > Tools > MCP Server` in your IDE
+       2. If needed, click `Enable MCP Server` to enable the MCP server
+       3. Click `Copy Stdio Config`
+       4. Click `OK` to save your changes and start the server
+       5. Copy the `command`, `args`, and `env` values from the config
 
-  5. Choose to add a description. If you select "Yes" here, you will be prompted to enter a description for the extension.
-  ```sh
-  ┌   goose-configure 
-  │
-  ◇  What would you like to configure?
-  │  Add Extension (Connect to a new extension) 
-  │
-  ◇  What type of extension would you like to add?
-  │  Built-in Extension 
-  │
-  ◇  Which built-in extension would you like to enable?
-  │  JetBrains
-  │
-  ◇  Please set the timeout for this tool (in secs):
-  │  300
-  │
-  // highlight-start
-  ◆  Would you like to add a description?
-  │  No
-  // highlight-end
-  │
-  └
-  ```
+    2. Add the JetBrains extension to goose using the command from the config:
+
+       <Tabs groupId="interface">
+         <TabItem value="ui" label="goose Desktop" default>
+           1. Click the <PanelLeft className="inline" size={16} /> button in the top-left to open the sidebar
+           2. Click `Extensions` on the sidebar
+           3. Click `Add custom extension`
+           4. On the `Add custom extension` modal, enter the following:
+              - **Extension Name**: JetBrains
+              - **Type**: STDIO
+              - **Description**: Integrate goose with any JetBrains IDE
+              - **Command**: Combine the `command` and `args` from your IDE's Stdio config into a single command string
+              - **Environment Variables**: Add `IJ_MCP_SERVER_PORT` with the port value from the `env` section of your copied Stdio config
+           5. Click `Add Extension` to save the extension
+           6. Navigate to the chat
+         </TabItem>
+         <TabItem value="cli" label="goose CLI">
+           <CLIExtensionInstructions
+             name="jetbrains"
+             description="Integrate goose with any JetBrains IDE"
+             type="stdio"
+             command="YOUR_COMMAND_AND_ARGS_FROM_IDE"
+             timeout={300}
+             envVars={[{ key: "IJ_MCP_SERVER_PORT", value: "YOUR_PORT_FROM_IDE" }]}
+             commandNote={
+               <>
+                 Combine <code>command</code> and <code>args</code> into a single string. The port value comes from the <code>env</code> section of your copied Stdio config.
+               </>
+             }
+           />
+         </TabItem>
+       </Tabs>
   </TabItem>
 </Tabs>
 
@@ -121,24 +139,19 @@ This tutorial covers how to enable and use the JetBrains MCP Server as a built-i
 
 In this example, I'm going to upgrade a Java project to the latest LTS version.
 
-:::info LLM
-Anthropic's Claude 3.5 Sonnet was used for this task.
-:::
-
-
 <Tabs groupId="interface">
-  <TabItem value="ui" label="Goose Desktop" default>
+  <TabItem value="ui" label="goose Desktop" default>
    1. Open [IntelliJ](https://www.jetbrains.com/idea/download) (JetBrains' Java and Kotlin IDE)
-   2. Open a new session in Goose Desktop
+   2. Open a new session in goose Desktop
    :::note
-   You will interact with two separate apps: the Goose Desktop app and the IntelliJ IDE.
+   You will interact with two separate apps: the goose Desktop app and the IntelliJ IDE.
    :::
 
   </TabItem>
-  <TabItem value="cli" label="Goose CLI">
+  <TabItem value="cli" label="goose CLI">
 
   1. Open [IntelliJ](https://www.jetbrains.com/idea/download) (JetBrains' Java and Kotlin IDE)
-  2. Open a terminal within your IDE and start a new Goose session:
+  2. Open a terminal within your IDE and start a new goose session:
 
   ```sh
   goose session
@@ -147,24 +160,24 @@ Anthropic's Claude 3.5 Sonnet was used for this task.
   </TabItem>
 </Tabs>
 
-:::tip 
-When using Goose to refactor code, it's recommended to commit your code to version control _before_ making changes. This way, you have a clean snapshot to compare against, making it easy to review Goose’s modifications, revert if needed, and track improvements.
+:::tip
+When using goose to refactor code, it's recommended to commit your code to version control _before_ making changes. This way, you have a clean snapshot to compare against, making it easy to review goose's modifications, revert if needed, and track improvements.
 :::
 
-### Goose Prompt
+### goose Prompt
 ```
 using the JetBrains IDE tools, upgrade this project to use the latest Java LTS version and refactor the codebase to use newer Java features where beneficial.
 ```
 
-After 2 minutes, Goose was done with the upgrade! 🎉
+After 2 minutes, goose was done with the upgrade! 🎉
 
-### Goose Output
+### goose Output
 
 ```md
 I'll make several improvements to modernize this codebase to use Java 21 (latest LTS) features. Here are the changes I'll implement:
 
 1. Update the `pom.xml` to use Java 21
-2. Use newer Java features 
+2. Use newer Java features
 
 [... code changes ...]
 
@@ -237,8 +250,7 @@ The codebase is now using the latest Java LTS version (21) and incorporates many
 
 
 
-
-Using the JetBrains extension provided several advantages and made it easier for Goose to:
+Using the JetBrains extension provided several advantages and made it easier for goose to:
 - navigate through the codebase
 - track changes
 - make consistent modifications across files

@@ -1,6 +1,7 @@
 import type { ExtensionConfig } from '../../../api/types.gen';
 import { FixedExtensionEntry } from '../../ConfigContext';
 import bundledExtensionsData from './bundled-extensions.json';
+import deprecatedBundledExtensionsData from './deprecated-bundled-extensions.json';
 import { nameToKey } from './utils';
 
 // Type definition for built-in extensions from JSON
@@ -8,9 +9,9 @@ type BundledExtension = {
   id: string;
   name: string;
   display_name?: string;
-  description?: string;
+  description: string;
   enabled: boolean;
-  type: 'builtin' | 'stdio' | 'sse';
+  type: 'builtin' | 'stdio' | 'streamable_http';
   cmd?: string;
   args?: string[];
   uri?: string;
@@ -19,6 +20,42 @@ type BundledExtension = {
   timeout?: number;
   allow_configure?: boolean;
 };
+
+type DeprecatedBundledExtension = {
+  id: string;
+};
+
+export function getDeprecatedBundledExtensions(): DeprecatedBundledExtension[] {
+  return deprecatedBundledExtensionsData as DeprecatedBundledExtension[];
+}
+
+function isBundledExtension(extension: FixedExtensionEntry): boolean {
+  return 'bundled' in extension && extension.bundled === true;
+}
+
+export async function pruneDeprecatedBundledExtensions(
+  existingExtensions: FixedExtensionEntry[],
+  removeExtensionFn: (id: string) => Promise<void>
+): Promise<FixedExtensionEntry[]> {
+  const deprecatedExtensionIds = new Set(getDeprecatedBundledExtensions().map((ext) => ext.id));
+  const remainingExtensions: FixedExtensionEntry[] = [];
+
+  for (const existingExt of existingExtensions) {
+    if (!isBundledExtension(existingExt)) {
+      remainingExtensions.push(existingExt);
+      continue;
+    }
+
+    if (!deprecatedExtensionIds.has(nameToKey(existingExt.name))) {
+      remainingExtensions.push(existingExt);
+      continue;
+    }
+
+    await removeExtensionFn(nameToKey(existingExt.name));
+  }
+
+  return remainingExtensions;
+}
 
 /**
  * Synchronizes built-in extensions with the config system.
@@ -42,26 +79,28 @@ export async function syncBundledExtensions(
       // Find if this extension already exists
       const existingExt = existingExtensions.find((ext) => nameToKey(ext.name) === bundledExt.id);
 
-      // Skip if extension exists and is already marked as bundled
-      if (existingExt?.bundled) continue;
+      if (existingExt && isBundledExtension(existingExt)) {
+        continue;
+      }
 
       // Create the config for this extension
       let extConfig: ExtensionConfig;
       switch (bundledExt.type) {
         case 'builtin':
           extConfig = {
-            name: bundledExt.name,
-            display_name: bundledExt.display_name,
             type: bundledExt.type,
+            name: bundledExt.name,
+            description: bundledExt.description,
+            display_name: bundledExt.display_name,
             timeout: bundledExt.timeout ?? 300,
             bundled: true,
           };
           break;
         case 'stdio':
           extConfig = {
+            type: bundledExt.type,
             name: bundledExt.name,
             description: bundledExt.description,
-            type: bundledExt.type,
             timeout: bundledExt.timeout,
             cmd: bundledExt.cmd || '',
             args: bundledExt.args || [],
@@ -70,11 +109,11 @@ export async function syncBundledExtensions(
             bundled: true,
           };
           break;
-        case 'sse':
+        case 'streamable_http':
           extConfig = {
+            type: bundledExt.type,
             name: bundledExt.name,
             description: bundledExt.description,
-            type: bundledExt.type,
             timeout: bundledExt.timeout,
             uri: bundledExt.uri || '',
             bundled: true,
@@ -89,15 +128,4 @@ export async function syncBundledExtensions(
     console.error('Failed to sync built-in extensions:', error);
     throw error;
   }
-}
-
-/**
- * Function to initialize all built-in extensions for a first-time user.
- * This can be called when the application is first installed.
- */
-export async function initializeBundledExtensions(
-  addExtensionFn: (name: string, config: ExtensionConfig, enabled: boolean) => Promise<void>
-): Promise<void> {
-  // Call with an empty list to ensure all built-ins are added
-  await syncBundledExtensions([], addExtensionFn);
 }

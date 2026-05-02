@@ -1,12 +1,16 @@
-pub mod info;
-pub mod storage;
+mod chat_history_search;
+mod diagnostics;
+pub mod extension_data;
+mod legacy;
+pub mod session_manager;
+pub mod thread_manager;
 
-// Re-export common session types and functions
-pub use storage::{
-    ensure_session_dir, generate_description, generate_description_with_schedule_id,
-    generate_session_id, get_most_recent_session, get_path, list_sessions, persist_messages,
-    persist_messages_with_schedule_id, read_messages, read_metadata, update_metadata, Identifier,
-    SessionMetadata,
+pub use diagnostics::{
+    config_path, generate_diagnostics, get_system_info, latest_llm_log_path,
+    latest_server_log_path, read_capped, read_tail, SystemInfo,
 };
-
-pub use info::{get_session_info, SessionInfo};
+pub use extension_data::{EnabledExtensionsState, ExtensionData, ExtensionState, TodoState};
+pub use session_manager::{
+    Session, SessionInsights, SessionManager, SessionType, SessionUpdateBuilder,
+};
+pub use thread_manager::{Thread, ThreadManager, ThreadMetadata};
