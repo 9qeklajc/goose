@@ -23,10 +23,8 @@ The provider reads three goose config keys (set via `goose configure` or
 
 | Key               | Required | Default                            | Notes                                    |
 | ----------------- | -------- | ---------------------------------- | ---------------------------------------- |
-| `ROUTSTR_HOST`    | yes      | `https://api.routstr.com`          | Base URL of the Routstr proxy.           |
-| `ROUTSTR_BASE_PATH` | yes    | `v1/chat/completions`              | Chat-completions path; rarely changed.   |
+| `ROUTSTR_HOST`    | no       | `https://api.routstr.com`          | Base URL of the Routstr proxy.           |
 | `ROUTSTR_API_KEY` | yes      | —                                  | Current Cashu token. Managed by wallet CLI; can be set manually for read-only smoke tests. |
-| `OPENAI_TIMEOUT`  | no       | `600`                              | Request timeout in seconds.              |
 
 Wallet defaults (constants in `wallet.rs` / `routstr.rs`):
 
@@ -151,37 +149,17 @@ and the amount matches.
 - **Mint unreachable:** point `DEFAULT_MINT_URL` at a bogus host; wallet ops
   should fail loudly rather than hang. CDK uses the wallet's `timeout`
   (`OPENAI_TIMEOUT`, default 600s) — keep this in mind for CI.
-- **Anthropic model branch:** `is_anthropic_model(model_name)` triggers
-  `update_request_for_anthropic` in `RoutstrProvider::complete`. Run
-  Scenario 1 with both an Anthropic and a non-Anthropic model from
-  `ROUTSTR_KNOWN_MODELS` to exercise both paths.
-- **`fetch_supported_models_async`:** the provider lists models from
-  `<host>/v1/models`. If the host is offline or returns malformed JSON,
-  the call must return `Ok(None)` (not an error) per the current
-  implementation — verify by pointing `ROUTSTR_HOST` at an unreachable
-  address and confirming `goose providers list` does not panic.
-
-## Known limitation — `RoutstrProvider` still gated
-
-The wallet CLI is fully functional and exposed as `goose wallet …`, but
-`RoutstrProvider` itself (`crates/goose/src/providers/routstr.rs`) still
-uses the old `Provider` trait shape and is not yet registered. The module
-declaration is commented out in `crates/goose/src/providers/mod.rs`:
-
-```text
-// TODO(ROU-27): port RoutstrProvider to new Provider/ProviderDef trait + register in init.rs
-// pub mod routstr;
-```
-
-Effects on this test plan:
-
-- **Scenario 1 (provider smoke test)** cannot be run end-to-end against
-  `goose session`/`goose run` until the provider is ported. As a partial
-  substitute, set `ROUTSTR_API_KEY` manually, run Scenarios 2–4 to
-  exercise the wallet path, and verify the proxy refund integration via
-  Scenario 3.
-- **Scenarios 2–4 (wallet flows)** work today and can be reviewed without
-  the provider port — they only depend on CDK and `ROUTSTR_HOST` reachability.
-
-The provider port is the next step in ROU-27 and is intentionally out of
-scope for this change.
+- **Anthropic model branch:** `supports_cache_control()` returns `true` for
+  any model whose name starts with `anthropic/`, which triggers
+  `update_request_for_anthropic` before posting. Run Scenario 1 with both
+  an Anthropic and a non-Anthropic model from `ROUTSTR_KNOWN_MODELS` to
+  exercise both paths.
+- **`fetch_supported_models`:** the provider lists models from
+  `<host>/v1/models`. Point `ROUTSTR_HOST` at an unreachable address and
+  confirm `goose providers list` surfaces a clear error rather than
+  panicking.
+- **Insufficient balance:** the provider maps a 400 response with
+  `code: "insufficient_balance"` to `ProviderError::InsufficientBalance(sats)`
+  so the CLI prompts the user to top up. Drain the wallet (Scenario 4),
+  then run a chat request — the error message should include the missing
+  sat count.

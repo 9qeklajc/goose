@@ -1,24 +1,26 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use reqwest::Client;
+use futures::future::BoxFuture;
+use reqwest::{Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::sync::Arc;
-use std::time::Duration;
+use serde_json::{json, Value};
 
-use super::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage, Usage};
-use super::errors::ProviderError;
-use super::formats::openai::{create_request, get_usage, response_to_message};
-use crate::message::Message;
+use super::api_client::{ApiClient, AuthMethod};
+use super::base::{ConfigKey, MessageStream, Provider, ProviderDef, ProviderMetadata};
+use super::errors::{OpenAIError, ProviderError};
+use super::http_status::map_http_error_to_provider_error;
+use super::openai_compatible::stream_openai_compat;
+use super::retry::ProviderRetry;
+use super::utils::{ImageFormat, RequestLog};
+use crate::conversation::message::Message;
 use crate::model::ModelConfig;
-use crate::providers::utils::{
-    emit_debug_trace, get_model, handle_provider_response, is_anthropic_model,
-    update_request_for_anthropic, ImageFormat, ProviderResponseType,
-};
-use mcp_core::tool::Tool;
+use crate::providers::formats::openai::create_request;
+use rmcp::model::Tool;
 
+const ROUTSTR_PROVIDER_NAME: &str = "routstr";
 pub const ROUTSTR_HOST: &str = "https://api.routstr.com";
 pub const ROUTSTR_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4";
+pub const ROUTSTR_MODEL_PREFIX_ANTHROPIC: &str = "anthropic";
 
 pub const ROUTSTR_KNOWN_MODELS: &[&str] = &[
     "meta-llama/llama-3.2-1b-instruct",
@@ -30,205 +32,264 @@ pub const ROUTSTR_DOC_URL: &str = "https://routstr.com/docs";
 pub const ROUTSTR_DEFAULT_MINT_URL: &str = "https://mint.minibits.cash/Bitcoin";
 pub const ROUTSTR_DEFAULT_CURRENCY_UNIT: &str = "sat";
 
-/// Pricing information for a model
+/// Pricing information for a model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPricing {
-    /// Price per input token (prompt)
     pub prompt: f64,
-    /// Price per output token (completion)
     pub completion: f64,
 }
 
-/// Individual model information
+/// Individual model information returned by `/v1/models`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
-    /// Model identifier (e.g., "gpt-4")
     pub id: String,
-    /// Object type, should be "model"
     pub object: String,
-    /// Unix timestamp of when the model was created
     pub created: i64,
-    /// Organization that owns the model (e.g., "openai", "anthropic")
     pub owned_by: String,
-    /// Permission information (typically empty array)
     pub permission: Vec<Value>,
-    /// Pricing information for this model
     pub pricing: ModelPricing,
-    /// Maximum context length supported by the model
     pub context_length: u32,
 }
 
-/// Response structure for the /v1/models endpoint
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsResponse {
-    /// Object type, should be "list"
     pub object: String,
-    /// Array of model information
     pub data: Vec<ModelInfo>,
 }
 
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(serde::Serialize)]
 pub struct RoutstrProvider {
     #[serde(skip)]
-    client: Arc<Client>,
-    host: String,
+    api_client: ApiClient,
     model: ModelConfig,
-    api_key: String,
-}
-
-impl Default for RoutstrProvider {
-    fn default() -> Self {
-        let model = ModelConfig::new(RoutstrProvider::metadata().default_model).with_toolshim(true);
-        // For the default implementation, we'll create a provider without pricing information
-        // The pricing will be fetched lazily when needed
-        Self::from_env(model).expect("Failed to initialize Routstr provider")
-    }
+    #[serde(skip)]
+    name: String,
 }
 
 impl RoutstrProvider {
-    pub fn from_env(model: ModelConfig) -> Result<Self> {
+    pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
-        let host = config
+
+        let host: String = config
             .get_param("ROUTSTR_HOST")
             .unwrap_or_else(|_| ROUTSTR_HOST.to_string());
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(600))
-            .build()?;
+        // ROUTSTR_API_KEY is a Cashu token managed by the wallet CLI
+        // (`goose wallet topup/withdraw/balance`), so it lives in the regular
+        // params store rather than the secrets keychain — the wallet has to
+        // rewrite it on every consolidate.
+        let api_key: String = config.get_param("ROUTSTR_API_KEY")?;
 
-        let current_token: String = config.get_param("ROUTSTR_API_KEY")?;
+        let api_client = ApiClient::new(host, AuthMethod::BearerToken(api_key))?;
 
-        let provider = Self {
-            client: Arc::new(client),
-            host,
+        Ok(Self {
+            api_client,
             model,
-            api_key: current_token,
-        };
-
-        Ok(provider)
+            name: ROUTSTR_PROVIDER_NAME.to_string(),
+        })
     }
 
-    async fn post(&self, payload: Value) -> Result<Value, ProviderError> {
-        let base_url = url::Url::parse(&self.host)
-            .map_err(|e| ProviderError::RequestFailed(format!("Invalid base URL: {e}")))?;
-        let url = base_url.join("v1/chat/completions").map_err(|e| {
-            ProviderError::RequestFailed(format!("Failed to construct endpoint URL: {e}"))
-        })?;
-
-        let auth_token = &self.api_key.trim();
-
+    async fn fetch_models_info(&self) -> Result<ModelsResponse, ProviderError> {
         let response = self
-            .client
-            .post(url)
-            .header("Authorization", format!("Bearer {auth_token}"))
-            .json(&payload)
-            .send()
-            .await?;
+            .api_client
+            .response_get(None, "v1/models")
+            .await
+            .map_err(|e| ProviderError::RequestFailed(format!("Failed to fetch models: {e}")))?;
+        let response = handle_routstr_status(response).await?;
 
-        handle_provider_response(response, ProviderResponseType::OpenAI).await
+        response.json::<ModelsResponse>().await.map_err(|e| {
+            ProviderError::RequestFailed(format!("Failed to parse models response: {e}"))
+        })
+    }
+}
+
+/// Inspect the response and convert non-2xx replies into the right
+/// `ProviderError`. Routstr piggy-backs on the OpenAI error envelope and
+/// signals an out-of-balance wallet via `code = "insufficient_balance"`
+/// in the body of a 400 — we surface that as `InsufficientBalance(sats)` so
+/// the CLI can prompt the user to top up.
+async fn handle_routstr_status(response: Response) -> Result<Response, ProviderError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
     }
 
-    /// Get models
-    async fn get_models_info(&self) -> Result<ModelsResponse, ProviderError> {
-        let base_url = url::Url::parse(&self.host)
-            .map_err(|e| ProviderError::RequestFailed(format!("Invalid base URL: {e}")))?;
-        let url = base_url.join("/v1/models").map_err(|e| {
-            ProviderError::RequestFailed(format!("Failed to construct endpoint URL: {e}"))
-        })?;
+    let body = response.text().await.unwrap_or_default();
+    let payload: Option<Value> = serde_json::from_str(&body).ok();
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(600))
-            .build()?;
+    if status == StatusCode::BAD_REQUEST {
+        if let Some(p) = &payload {
+            if let Some(error_obj) = p.get("error") {
+                if let Ok(err) = serde_json::from_value::<OpenAIError>(error_obj.clone()) {
+                    if let Some(sats) = err.get_insufficient_balance() {
+                        return Err(ProviderError::InsufficientBalance(sats));
+                    }
+                }
+            }
+        }
+    }
 
-        let response = client
-            .get(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .send()
-            .await?;
+    Err(map_http_error_to_provider_error(status, payload))
+}
 
-        let models_response: ModelsResponse = response.json().await.map_err(|e| {
-            ProviderError::RequestFailed(format!("Failed to parse models response: {e}"))
-        })?;
+/// Apply Anthropic prompt-caching markers to an OpenAI-shaped payload.
+/// Mirrors the OpenRouter helper: cache-control on the system message,
+/// the last two user messages, and the final tool spec.
+fn update_request_for_anthropic(original_payload: &Value) -> Value {
+    let mut payload = original_payload.clone();
 
-        Ok(models_response)
+    if let Some(messages_spec) = payload
+        .as_object_mut()
+        .and_then(|obj| obj.get_mut("messages"))
+        .and_then(|messages| messages.as_array_mut())
+    {
+        let mut user_count = 0;
+        for message in messages_spec.iter_mut().rev() {
+            if message.get("role") == Some(&json!("user")) {
+                if let Some(content) = message.get_mut("content") {
+                    if let Some(content_str) = content.as_str() {
+                        *content = json!([{
+                            "type": "text",
+                            "text": content_str,
+                            "cache_control": { "type": "ephemeral" }
+                        }]);
+                    }
+                }
+                user_count += 1;
+                if user_count >= 2 {
+                    break;
+                }
+            }
+        }
+
+        if let Some(system_message) = messages_spec
+            .iter_mut()
+            .find(|msg| msg.get("role") == Some(&json!("system")))
+        {
+            if let Some(content) = system_message.get_mut("content") {
+                if let Some(content_str) = content.as_str() {
+                    *system_message = json!({
+                        "role": "system",
+                        "content": [{
+                            "type": "text",
+                            "text": content_str,
+                            "cache_control": { "type": "ephemeral" }
+                        }]
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(tools_spec) = payload
+        .as_object_mut()
+        .and_then(|obj| obj.get_mut("tools"))
+        .and_then(|tools| tools.as_array_mut())
+    {
+        if let Some(last_tool) = tools_spec.last_mut() {
+            if let Some(function) = last_tool.get_mut("function") {
+                if let Some(obj) = function.as_object_mut() {
+                    obj.insert("cache_control".to_string(), json!({ "type": "ephemeral" }));
+                }
+            }
+        }
+    }
+
+    payload
+}
+
+impl ProviderDef for RoutstrProvider {
+    type Provider = Self;
+
+    fn metadata() -> ProviderMetadata {
+        ProviderMetadata::new(
+            ROUTSTR_PROVIDER_NAME,
+            "Routstr",
+            "LLM provider with Cashu (CDK) wallet payment integration",
+            ROUTSTR_DEFAULT_MODEL,
+            ROUTSTR_KNOWN_MODELS.to_vec(),
+            ROUTSTR_DOC_URL,
+            vec![
+                // Cashu token managed by `goose wallet`; not a keychain secret
+                // because the wallet has to rewrite it on every consolidate.
+                ConfigKey::new("ROUTSTR_API_KEY", true, false, None, true),
+                ConfigKey::new("ROUTSTR_HOST", false, false, Some(ROUTSTR_HOST), false),
+            ],
+        )
+        .with_setup_steps(vec![
+            "Run `goose wallet topup <cashu-token>` to seed the routstr balance",
+            "`goose wallet balance` writes a fresh Cashu token to ROUTSTR_API_KEY",
+            "Optionally override ROUTSTR_HOST to point at a self-hosted Routstr",
+        ])
+    }
+
+    fn from_env(
+        model: ModelConfig,
+        _extensions: Vec<crate::config::ExtensionConfig>,
+    ) -> BoxFuture<'static, Result<Self::Provider>> {
+        Box::pin(Self::from_env(model))
     }
 }
 
 #[async_trait]
 impl Provider for RoutstrProvider {
-    fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
-            "routstr",
-            "Routstr",
-            "LLM provider with CDK wallet payment integration",
-            ROUTSTR_DEFAULT_MODEL,
-            ROUTSTR_KNOWN_MODELS.to_vec(),
-            ROUTSTR_DOC_URL,
-            vec![
-                ConfigKey::new("ROUTSTR_HOST", true, false, Some(ROUTSTR_HOST)),
-                ConfigKey::new(
-                    "ROUTSTR_BASE_PATH",
-                    true,
-                    false,
-                    Some("v1/chat/completions"),
-                ),
-                ConfigKey::new("OPENAI_TIMEOUT", false, false, Some("600")),
-            ],
-        )
+    fn get_name(&self) -> &str {
+        &self.name
     }
 
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }
 
-    #[tracing::instrument(
-        skip(self, system, messages, tools),
-        fields(model_config, input, output, input_tokens, output_tokens, total_tokens)
-    )]
-    async fn complete(
+    async fn fetch_supported_models(&self) -> Result<Vec<String>, ProviderError> {
+        let models = self.fetch_models_info().await?;
+        let mut ids: Vec<String> = models.data.into_iter().map(|m| m.id).collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    async fn supports_cache_control(&self) -> bool {
+        self.model
+            .model_name
+            .starts_with(ROUTSTR_MODEL_PREFIX_ANTHROPIC)
+    }
+
+    async fn stream(
         &self,
+        model_config: &ModelConfig,
+        session_id: &str,
         system: &str,
         messages: &[Message],
         tools: &[Tool],
-    ) -> Result<(Message, ProviderUsage), ProviderError> {
-        // Create request with provided tools
-        let mut payload =
-            create_request(&self.model, system, messages, tools, &ImageFormat::OpenAi)?;
+    ) -> Result<MessageStream, ProviderError> {
+        let mut payload = create_request(
+            model_config,
+            system,
+            messages,
+            tools,
+            &ImageFormat::OpenAi,
+            true,
+        )?;
 
-        // Apply anthropic-specific modifications if needed
-        if is_anthropic_model(&self.model.model_name) {
+        if self.supports_cache_control().await {
             payload = update_request_for_anthropic(&payload);
         }
 
-        // Make request
-        let response = self.post(payload.clone()).await?;
+        let mut log = RequestLog::start(model_config, &payload)?;
 
-        // Parse response
-        let message = response_to_message(response.clone())?;
+        let response = self
+            .with_retry(|| async {
+                let resp = self
+                    .api_client
+                    .response_post(Some(session_id), "v1/chat/completions", &payload)
+                    .await?;
+                handle_routstr_status(resp).await
+            })
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
 
-        let usage = match get_usage(&response) {
-            Ok(usage) => usage,
-            Err(ProviderError::UsageError(e)) => {
-                tracing::debug!("Failed to get usage data: {}", e);
-                Usage::default()
-            }
-            Err(e) => return Err(e),
-        };
-        let model = get_model(&response);
-        emit_debug_trace(&self.model, &payload, &response, &usage);
-        Ok((message, ProviderUsage::new(model, usage)))
-    }
-
-    fn supports_embeddings(&self) -> bool {
-        false
-    }
-
-    async fn fetch_supported_models_async(&self) -> Result<Option<Vec<String>>, ProviderError> {
-        if let Ok(models) = self.get_models_info().await {
-            let model_ids = models.data.into_iter().map(|m| m.id.clone()).collect();
-            Ok(Some(model_ids))
-        } else {
-            Ok(None)
-        }
+        stream_openai_compat(response, log)
     }
 }

@@ -46,8 +46,7 @@ pub mod pi_acp;
 pub mod provider_registry;
 pub mod provider_test;
 mod retry;
-// TODO(ROU-27): port RoutstrProvider to new Provider/ProviderDef trait + register in init.rs
-// pub mod routstr;
+pub mod routstr;
 #[cfg(feature = "aws-providers")]
 pub mod sagemaker_tgi;
 pub mod snowflake;
