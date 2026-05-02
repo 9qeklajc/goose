@@ -1,4 +1,14 @@
+---
+sidebar_position: 51
+title: Routstr — Manual Test Scenario
+sidebar_label: Routstr (test plan)
+description: QA matrix for the Routstr provider and wallet CLI
+---
+
 # Routstr Provider — Manual Test Scenario
+
+> User-facing setup, model listing, and host-switching are covered in the
+> [Routstr guide](./routstr.md). This page is the QA / regression matrix.
 
 Test plan for the `routstr` branch, which integrates the
 [Routstr](https://routstr.com/docs) LLM proxy and a Cashu/CDK-backed wallet
