@@ -104,10 +104,19 @@ impl RoutstrProvider {
 }
 
 /// Inspect the response and convert non-2xx replies into the right
-/// `ProviderError`. Routstr piggy-backs on the OpenAI error envelope and
-/// signals an out-of-balance wallet via `code = "insufficient_balance"`
-/// in the body of a 400 — we surface that as `InsufficientBalance(sats)` so
-/// the CLI can prompt the user to top up.
+/// `ProviderError`. Routstr signals an out-of-balance wallet via
+/// `code = "insufficient_balance"` in the response body — we surface that as
+/// `InsufficientBalance(sats)` so the CLI can prompt the user to top up.
+///
+/// Different Routstr instances disagree on the exact envelope:
+///   - upstream `api.routstr.com`: HTTP 400, body `{"error": {...}}`
+///   - `routstr.otrta.me` and similar: HTTP 402 (Payment Required), body
+///     `{"detail": {"error": {...}}}`, with the required amount expressed in
+///     **mSats** (millisats) rather than sats.
+///
+/// Match both shapes before falling through to the shared HTTP mapper. If
+/// the proxy reports the required amount in mSats, normalise to sats so the
+/// user-facing error message shows the actual top-up amount.
 async fn handle_routstr_status(response: Response) -> Result<Response, ProviderError> {
     let status = response.status();
     if status.is_success() {
@@ -117,19 +126,36 @@ async fn handle_routstr_status(response: Response) -> Result<Response, ProviderE
     let body = response.text().await.unwrap_or_default();
     let payload: Option<Value> = serde_json::from_str(&body).ok();
 
-    if status == StatusCode::BAD_REQUEST {
-        if let Some(p) = &payload {
-            if let Some(error_obj) = p.get("error") {
-                if let Ok(err) = serde_json::from_value::<OpenAIError>(error_obj.clone()) {
-                    if let Some(sats) = err.get_insufficient_balance() {
-                        return Err(ProviderError::InsufficientBalance(sats));
-                    }
-                }
-            }
+    if matches!(
+        status,
+        StatusCode::BAD_REQUEST | StatusCode::PAYMENT_REQUIRED
+    ) {
+        if let Some(sats) = parse_insufficient_balance(payload.as_ref()) {
+            return Err(ProviderError::InsufficientBalance(sats));
         }
     }
 
     Err(map_http_error_to_provider_error(status, payload))
+}
+
+/// Try to extract a Routstr `insufficient_balance` error from a JSON
+/// payload. Returns the required amount in **sats**, normalising mSats when
+/// the upstream message reports milli-sats (otrta envelope). Returns `None`
+/// if the payload doesn't carry an OpenAI-shaped `code = "insufficient_balance"`
+/// error.
+fn parse_insufficient_balance(payload: Option<&Value>) -> Option<f64> {
+    let p = payload?;
+    let error_obj = p
+        .get("error")
+        .or_else(|| p.get("detail").and_then(|d| d.get("error")))?;
+    let err: OpenAIError = serde_json::from_value(error_obj.clone()).ok()?;
+    let value = err.get_insufficient_balance()?;
+    let in_msats = err
+        .message
+        .as_deref()
+        .map(|m| m.to_lowercase().contains("msat"))
+        .unwrap_or(false);
+    Some(if in_msats { value / 1000.0 } else { value })
 }
 
 /// Apply Anthropic prompt-caching markers to an OpenAI-shaped payload.
@@ -291,5 +317,60 @@ impl Provider for RoutstrProvider {
             })?;
 
         stream_openai_compat(response, log)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_insufficient_balance_root_envelope_in_sats() {
+        // upstream api.routstr.com style: HTTP 400, root error, sats
+        let payload = json!({
+            "error": {
+                "message": "Insufficient balance: 500 sats required for this request.",
+                "code": "insufficient_balance",
+                "type": "insufficient_quota"
+            }
+        });
+        assert_eq!(parse_insufficient_balance(Some(&payload)), Some(500.0));
+    }
+
+    #[test]
+    fn parse_insufficient_balance_otrta_envelope_in_msats() {
+        // routstr.otrta.me style: HTTP 402, nested detail.error, mSats
+        let payload = json!({
+            "detail": {
+                "error": {
+                    "message": "Insufficient balance: 3379439 mSats required for this model. 1976000 available.",
+                    "type": "insufficient_quota",
+                    "code": "insufficient_balance"
+                }
+            },
+            "request_id": "abc"
+        });
+        // 3379439 mSats / 1000 = 3379.439 sats
+        assert_eq!(parse_insufficient_balance(Some(&payload)), Some(3379.439));
+    }
+
+    #[test]
+    fn parse_insufficient_balance_ignores_other_codes() {
+        let payload = json!({
+            "error": {
+                "message": "model not available",
+                "code": "model_not_found"
+            }
+        });
+        assert_eq!(parse_insufficient_balance(Some(&payload)), None);
+    }
+
+    #[test]
+    fn parse_insufficient_balance_ignores_unrelated_payload() {
+        let payload = json!({"detail": "something else"});
+        assert_eq!(parse_insufficient_balance(Some(&payload)), None);
+
+        assert_eq!(parse_insufficient_balance(None), None);
     }
 }
