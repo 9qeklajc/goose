@@ -19,8 +19,9 @@ This guide walks through:
 - switching between Routstr hosts (default vs. self-hosted)
 - the env vars that override the same settings without the interactive flow
 
-For the full wallet/provider QA matrix, see the [test scenario
-doc](./routstr-test-scenario.md).
+For the full wallet workflow (top-up, balance, withdraw, refund-on-top-up),
+see the [Routstr wallet guide](./routstr-wallet.md). For the QA / regression
+matrix, see the [test scenario doc](./routstr-test-scenario.md).
 
 ## One-time setup
 
@@ -136,6 +137,10 @@ goose wallet withdraw 50
 
 `balance` and `topup` consolidate proofs into a single ecash token and write
 it back to `ROUTSTR_API_KEY`, so the next chat request has a fresh token.
+
+The full top-up workflow — including the refund-on-top-up step that reclaims
+unspent sats from Routstr before each top-up — is documented in the
+[Routstr wallet guide](./routstr-wallet.md).
 
 ## Configuration reference
 
