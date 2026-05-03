@@ -1,244 +1,185 @@
-use anyhow::Result;
+//! Local Cashu wallet behind the Routstr provider.
+//!
+//! This is a *plain* CDK wallet — it receives Cashu tokens, holds proofs in
+//! a local redb store, and lets the user mint a fresh Cashu token to drain
+//! some or all of the balance. It knows **nothing** about Routstr.
+//!
+//! Sats only move to a Routstr instance via `goose routstr topup` (which
+//! drains some of the local balance into a Cashu token and POSTs that to
+//! `<host>/v1/balance/topup`). Sats come back via `goose routstr refund`
+//! (which calls `<host>/v1/balance/refund`, redeems the returned Cashu
+//! token here, and zeros the api_key on the proxy).
+
+use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::nuts::CurrencyUnit;
-use cdk::nuts::Token;
-use cdk::wallet::{SendOptions, Wallet};
+use cdk::wallet::{ReceiveOptions, SendOptions, Wallet};
 use cdk::Amount;
 use cdk_redb::WalletRedbDatabase;
-use goose::config::Config;
 use home::home_dir;
-use reqwest::Client;
-use serde_json::Value;
 use std::fs;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 const DEFAULT_MINT_URL: &str = "https://mint.minibits.cash/Bitcoin";
 
+/// Balance + provenance info for a single local CDK wallet, useful for
+/// human-readable reporting.
+pub struct LocalWalletStatus {
+    pub balance_sats: u64,
+    pub mint_url: String,
+    pub seed_path: PathBuf,
+}
+
 pub async fn handle_wallet_balance() -> Result<()> {
-    let wallet = initialize_wallet().await?;
-
-    if let Some(current_token) = get_current_token().ok() {
-        handle_refund(&current_token, &wallet).await?;
-    }
-
-    let balance = wallet.total_balance().await?;
-
-    println!("sats: {}", balance);
-
-    let proofs = consolidate_proofs(&wallet, balance).await?;
-
-    let token = Token::new(
-        wallet.mint_url.clone(),
-        proofs,
-        None,
-        wallet.unit.clone(),
-    );
-
-    set_current_token(token.to_string())?;
-
+    let wallet = open_wallet().await?;
+    let balance: Amount = wallet.total_balance().await?;
+    println!("local wallet: {} sats", u64::from(balance));
+    println!("mint:         {}", DEFAULT_MINT_URL);
     Ok(())
 }
 
-async fn consolidate_proofs(wallet: &Wallet, balance: Amount) -> Result<cdk::nuts::Proofs> {
-    let unspent = wallet.get_unspent_proofs().await?;
-    if balance == Amount::ZERO || unspent.is_empty() {
-        return Ok(unspent);
-    }
-
-    let swapped = wallet
-        .swap(
-            Some(balance),
-            SplitTarget::default(),
-            unspent.clone(),
-            None,  // spending_conditions
-            false, // include_fees
-            false, // use_p2bk
-        )
-        .await?;
-
-    // swap returns Ok(None) when proofs are already in optimal denominations;
-    // fall back to the unspent set so the encoded token still matches the balance.
-    Ok(swapped.unwrap_or(unspent))
-}
-
-fn get_current_token() -> Result<String> {
-    let config = Config::global();
-
-    Ok(config
-        .get_param::<String>("ROUTSTR_API_KEY")?
-        .to_string()
-        .trim()
-        .to_string())
-}
-
-fn set_current_token(token: String) -> Result<()> {
-    let config = Config::global();
-
-    config.set_param("ROUTSTR_API_KEY", Value::String(token.trim().to_string()))?;
-
-    Ok(())
-}
-
-fn clear_current_token() -> Result<()> {
-    let config = Config::global();
-    config.delete("ROUTSTR_API_KEY")?;
-    Ok(())
-}
-
-async fn handle_refund(current_token: &str, wallet: &Wallet) -> Result<()> {
-    let config = Config::global();
-
-    let host: String = config.get_param("ROUTSTR_HOST")?;
-
-    let base_url = url::Url::parse(&host)?;
-    let url = base_url.join("/v1/wallet/refund")?;
-
-    let client = Client::builder()
-        .timeout(Duration::from_secs(600))
-        .build()?;
-
-    let response = client
-        .post(url)
-        .header("Authorization", format!("Bearer {current_token}"))
-        .send()
-        .await?;
-
-    let response: Value = response.json().await?;
-
-    if let Some(token) = response.get("token") {
-        match wallet
-            .receive(
-                &token.to_string().trim_matches('"'),
-                cdk::wallet::ReceiveOptions::default(),
-            )
-            .await
-        {
-            Ok(amount) => {
-                tracing::debug!("Claimed change from mint: {} sats.", amount);
-            }
-            Err(e) => {
-                tracing::error!("Failed to claim change: {}", e);
-                tracing::error!("{}", token);
-            }
-        }
-        clear_current_token()?;
-    }
-
-    Ok(())
-}
-
-pub async fn handle_wallet_topup(top_up_token: String) -> Result<()> {
-    let wallet = initialize_wallet().await?;
-
-    if top_up_token.trim().is_empty() {
+pub async fn handle_wallet_topup(token: String) -> Result<()> {
+    let token = token.trim();
+    if token.is_empty() {
         println!("No token provided. Operation cancelled.");
         return Ok(());
     }
 
-    if let Some(current_token) = get_current_token().ok() {
-        handle_refund(&current_token, &wallet).await?;
-    }
-
-    match wallet
-        .receive(
-            &top_up_token.to_string().trim_matches('"'),
-            cdk::wallet::ReceiveOptions::default(),
-        )
+    let wallet = open_wallet().await?;
+    let amount = wallet
+        .receive(token, ReceiveOptions::default())
         .await
-    {
-        Ok(amount) => {
-            tracing::debug!("Claimed change from mint: {} sats.", amount);
-        }
-        Err(e) => {
-            tracing::error!("Failed to claim change: {}", e);
-            tracing::error!("{}", top_up_token);
-        }
-    }
+        .map_err(|e| anyhow::anyhow!("Failed to receive token: {e}"))?;
 
-    let balance = wallet.total_balance().await?;
-
-    let proofs = consolidate_proofs(&wallet, balance).await?;
-
-    let token = Token::new(
-        wallet.mint_url.clone(),
-        proofs,
-        None,
-        wallet.unit.clone(),
+    let balance: Amount = wallet.total_balance().await?;
+    println!(
+        "Received {} sats. Local wallet balance: {} sats.",
+        u64::from(amount),
+        u64::from(balance),
     );
-
-    set_current_token(token.to_string())?;
-
     Ok(())
 }
 
 pub async fn handle_wallet_withdraw(amount: Option<u64>) -> Result<()> {
-    let wallet = initialize_wallet().await?;
+    let wallet = open_wallet().await?;
+    let balance: Amount = wallet.total_balance().await?;
 
-    if let Some(current_token) = get_current_token().ok() {
-        println!("{}", current_token);
-        handle_refund(&current_token, &wallet).await?;
+    if balance == Amount::ZERO {
+        println!("Local wallet is empty.");
+        return Ok(());
     }
 
-    let balance = wallet.total_balance().await?;
+    let amount = amount
+        .map(Amount::from)
+        .unwrap_or(balance)
+        .min(balance);
 
-    if balance > Amount::ZERO {
-        let amount = amount.map(Amount::from);
+    let prep_send = wallet.prepare_send(amount, SendOptions::default()).await?;
+    let token = prep_send.confirm(None).await?;
+    println!("{}", token);
 
-        let amount = amount.unwrap_or(balance);
-
-        let prep_send = wallet.prepare_send(amount, SendOptions::default()).await?;
-
-        let token = prep_send.confirm(None).await?;
-
-        println!("{}", token);
-    } else {
-        println!("Wallet is empty.");
-    }
-
+    let new_balance: Amount = wallet.total_balance().await?;
+    eprintln!(
+        "Withdrew {} sats. Local wallet balance: {} sats.",
+        u64::from(amount),
+        u64::from(new_balance),
+    );
     Ok(())
 }
 
-async fn initialize_wallet() -> Result<Wallet> {
-    let work_dir = home_dir().unwrap().join(".cdk-gooose");
+/// Open the local CDK wallet, creating the seed/redb on first use. Public
+/// so the new `goose routstr` subcommand can reuse it for topup/refund.
+pub async fn open_wallet() -> Result<Wallet> {
+    let work_dir = wallet_dir()?;
     fs::create_dir_all(&work_dir)?;
-    let cdk_wallet_path = work_dir.join("cdk-goose.redb");
 
+    let cdk_wallet_path = work_dir.join("cdk-goose.redb");
     let wallet_db = WalletRedbDatabase::new(&cdk_wallet_path)?;
 
     let seed_path = work_dir.join("seed");
-
-    let mnemonic = match fs::metadata(seed_path.clone()) {
-        Ok(_) => {
-            let contents = fs::read_to_string(seed_path.clone())?;
-            Mnemonic::from_str(&contents)?
-        }
+    let mnemonic = match fs::metadata(&seed_path) {
+        Ok(_) => Mnemonic::from_str(&fs::read_to_string(&seed_path)?)?,
         Err(_) => {
             let mnemonic = Mnemonic::generate(12)?;
-            tracing::info!("Creating new seed");
-            fs::write(seed_path, mnemonic.to_string())?;
+            tracing::info!("Creating new Cashu wallet seed");
+            fs::write(&seed_path, mnemonic.to_string())?;
             mnemonic
         }
     };
 
     let seed = mnemonic.to_seed_normalized("");
-    let currency_unit = CurrencyUnit::Sat;
-
     let wallet = Wallet::new(
         DEFAULT_MINT_URL,
-        currency_unit,
+        CurrencyUnit::Sat,
         Arc::new(wallet_db),
         seed,
         None,
     )?;
 
-    // Best-effort: release any proofs left in `Reserved` from an interrupted
-    // swap/send/melt. A failure here must not block opening the wallet.
     if let Err(e) = wallet.recover_incomplete_sagas().await {
-        tracing::warn!("recover_incomplete_sagas failed: {}", e);
+        tracing::warn!("recover_incomplete_sagas failed: {e}");
     }
 
     Ok(wallet)
+}
+
+pub async fn wallet_status() -> Result<LocalWalletStatus> {
+    let wallet = open_wallet().await?;
+    let balance: Amount = wallet.total_balance().await?;
+    Ok(LocalWalletStatus {
+        balance_sats: u64::from(balance),
+        mint_url: DEFAULT_MINT_URL.to_string(),
+        seed_path: wallet_dir()?.join("seed"),
+    })
+}
+
+/// Withdraw `amount` sats from the local wallet and return the encoded
+/// Cashu token. Helper for the `goose routstr topup` flow.
+pub async fn withdraw_to_token(wallet: &Wallet, amount: Amount) -> Result<String> {
+    let balance: Amount = wallet.total_balance().await?;
+    if balance < amount {
+        bail!(
+            "Local wallet has {} sats, need {}.",
+            u64::from(balance),
+            u64::from(amount)
+        );
+    }
+    let prep_send = wallet
+        .prepare_send(amount, SendOptions::default())
+        .await?;
+    let token = prep_send.confirm(None).await?;
+    Ok(token.to_string())
+}
+
+/// Receive a Cashu token returned by `/v1/balance/refund` into the local
+/// wallet. Returns the amount of sats added.
+pub async fn receive_into_wallet(wallet: &Wallet, token: &str) -> Result<u64> {
+    let amount = wallet
+        .receive(token.trim(), ReceiveOptions::default())
+        .await?;
+    Ok(u64::from(amount))
+}
+
+/// Best-effort split for a desired top-up amount. Caps at the available
+/// local balance.
+pub fn capped_topup(desired: Amount, available: Amount) -> Amount {
+    if available < desired {
+        available
+    } else {
+        desired
+    }
+}
+
+fn wallet_dir() -> Result<PathBuf> {
+    let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not resolve home directory"))?;
+    Ok(home.join(".cdk-gooose"))
+}
+
+/// Use SplitTarget::default() for prepare_send. Re-exported for the routstr
+/// subcommand so it can keep parity if it ever needs to call swap directly.
+pub fn default_split_target() -> SplitTarget {
+    SplitTarget::default()
 }

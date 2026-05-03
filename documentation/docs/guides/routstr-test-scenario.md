@@ -2,176 +2,200 @@
 sidebar_position: 51
 title: Routstr — Manual Test Scenario
 sidebar_label: Routstr (test plan)
-description: QA matrix for the Routstr provider and wallet CLI
+description: QA matrix for the Routstr provider, wallet CLI, and multi-profile flows
 ---
 
 # Routstr Provider — Manual Test Scenario
 
-> User-facing setup, model listing, and host-switching are covered in the
-> [Routstr guide](./routstr.md). The wallet top-up workflow is covered in
-> the [Routstr wallet guide](./routstr-wallet.md). This page is the QA /
-> regression matrix.
+> User-facing setup is in the [Routstr guide](./routstr.md). The wallet
+> internals are in the [wallet guide](./routstr-wallet.md). This page is
+> the QA / regression matrix.
 
-Test plan for the `routstr` branch, which integrates the
-[Routstr](https://routstr.com/docs) LLM proxy and a Cashu/CDK-backed wallet
-into goose. The Routstr proxy bills LLM usage in Bitcoin sats; goose pays per
-request with an ecash token carried in the `Authorization` header and reclaims
-unused sats after each call via `/v1/wallet/refund`.
+Test plan for the `routstr` branch. The branch integrates the
+[Routstr](https://routstr.com/docs) LLM proxy and a Cashu/CDK-backed
+wallet into goose. The provider authenticates with a per-profile
+`sk-...` API key issued by the proxy; sats live in a single shared local
+Cashu wallet and are moved to/from a profile via the proxy's
+`/v1/balance/{create,topup,refund,info}` endpoints.
 
 What this branch ships:
 
-- `goose::providers::routstr::RoutstrProvider` — an OpenAI-compatible provider
-  that posts to a Routstr host and authenticates with a Cashu token
-  (`crates/goose/src/providers/routstr.rs`).
-- A wallet CLI module (`crates/goose-cli/src/commands/wallet.rs`) with
-  `Balance`, `Topup`, and `Withdraw` flows backed by CDK 0.16 + a local
-  redb wallet store at `~/.cdk-gooose/cdk-goose.redb`. Exposed as
-  `goose wallet …` on the CLI.
+- `goose::providers::routstr::RoutstrProvider` — OpenAI-compatible
+  provider that authenticates with the active profile's `sk-...` key.
+- `goose::providers::routstr_api` — config schema (`ROUTSTR_PROFILES`,
+  `ROUTSTR_ACTIVE`) plus the proxy balance-API client.
+- `goose wallet …` (`crates/goose-cli/src/commands/wallet.rs`) — pure
+  local CDK wallet (topup / balance / withdraw against a local redb
+  store at `~/.cdk-gooose/cdk-goose.redb`).
+- `goose routstr …` (`crates/goose-cli/src/commands/routstr.rs`) —
+  profile management (`profile add/list/use/remove`) and proxy moves
+  (`topup`, `refund`, `balance`).
 
 ## Configuration
 
-The provider reads three goose config keys (set via `goose configure` or
-`~/.config/goose/config.yaml`):
+| Key | Type | Notes |
+| --- | --- | --- |
+| `ROUTSTR_PROFILES` | map of `{name -> {url, api_key}}` | Written by `goose routstr profile add` / `goose routstr topup`. `api_key` is `sk-...`, **not** a Cashu token. |
+| `ROUTSTR_ACTIVE` | string | Name of the currently-active profile. Written by `goose routstr profile use`. |
+| `ROUTSTR_HOST` | string (env or config) | Per-shell URL override. Wins over the active profile's `url` when set; useful for one-off scripts. |
 
-| Key               | Required | Default                            | Notes                                    |
-| ----------------- | -------- | ---------------------------------- | ---------------------------------------- |
-| `ROUTSTR_HOST`    | no       | `https://api.routstr.com`          | Base URL of the Routstr proxy.           |
-| `ROUTSTR_API_KEY` | yes      | —                                  | Current Cashu token. Managed by wallet CLI; can be set manually for read-only smoke tests. |
-
-Wallet defaults (constants in `wallet.rs` / `routstr.rs`):
+Wallet defaults (constants in `wallet.rs`):
 
 - Mint: `https://mint.minibits.cash/Bitcoin`
-- Currency unit: `sat`
+- Currency: `sat`
 - Wallet dir: `~/.cdk-gooose/` (BIP-39 seed at `~/.cdk-gooose/seed`,
-  redb store at `~/.cdk-gooose/cdk-goose.redb`).
+  redb store at `~/.cdk-gooose/cdk-goose.redb`)
 
 ## Prerequisites
 
-1. A Routstr host you can reach (default `https://api.routstr.com`, or a
-   self-hosted instance).
-2. A Cashu mint reachable from the test machine (default
-   `https://mint.minibits.cash/Bitcoin`).
-3. A funded Cashu token for top-up. Any wallet that supports the configured
-   mint can produce one (e.g. Minibits, Cashu.me).
-4. A clean test machine — the wallet writes a BIP-39 seed to `~/.cdk-gooose/`
-   and treats whatever is there as authoritative. Back it up or use a throwaway
-   `$HOME` if you re-run.
+1. A Routstr instance you can reach (default `https://api.routstr.com`,
+   community `https://routstr.otrta.me`, or a self-hosted one).
+2. A Cashu mint reachable from the test machine. The instance you pick
+   must trust this mint — the public Routstr instances accept Minibits
+   tokens.
+3. A funded Cashu token from any wallet that mints against the same
+   mint (Minibits app, Cashu.me, etc.). Even ~500 sats is enough to
+   exercise all scenarios.
+4. A clean test machine — the wallet writes a BIP-39 seed to
+   `~/.cdk-gooose/`. Back it up or use a throwaway `$HOME` if you re-run.
 
 ## Build
 
 ```sh
-cargo build -p goose-cli --release
+cargo build -p goose-cli --no-default-features \
+  --features "code-mode,aws-providers,telemetry,otel,rustls-tls"
 ```
 
-The branch adds these crates to `goose-cli`: `cdk` (0.16), `cdk-redb`
-(0.16), `bip39`, `home`, `url`, `tokio`, `tracing`, `serde_json`. We use
-`cdk-redb` instead of `cdk-sqlite` because cdk-sqlite's rusqlite pulls in
-`libsqlite3-sys 0.28`, which conflicts with goose's `sqlx 0.8.x`
-(`libsqlite3-sys 0.30`) at the cargo `links = "sqlite3"` rule. A clean
-build should succeed without network access to the mint (CDK initialises
-lazily).
+The CDK / wallet stack adds: `cdk = "0.16"`, `cdk-redb = "0.16"`,
+`bip39`, `home`. Clean build should succeed without network access.
 
-## Scenario 1 — Provider smoke test (no wallet)
+## Scenario 1 — Provider smoke test (with the new profile flow)
 
-Verifies that `RoutstrProvider` is registered and can complete a chat request
-against a real Routstr host using a manually-supplied token.
+End-to-end: receive a Cashu token, register a profile, top it up, chat.
 
-1. Obtain a valid ecash token from any Cashu wallet against the same mint the
-   Routstr host trusts.
-2. `goose configure` → set `ROUTSTR_HOST`, `ROUTSTR_API_KEY` (the token),
-   leave defaults for the rest.
-3. Select the `routstr` provider and a known model
-   (default: `anthropic/claude-sonnet-4`; full list in
-   `ROUTSTR_KNOWN_MODELS`).
-4. Run `goose session start` and send `say hi`.
+```sh
+goose wallet topup cashuBfromMinibits...
+goose routstr profile add otrta --url https://routstr.otrta.me
+goose routstr topup 500
+goose run --provider routstr --model glm-5.1 --text "say hi" --no-session -q
+```
 
 Pass criteria:
 
-- Goose returns a chat response (any non-error completion).
-- `ROUTSTR_API_KEY` is unchanged in config (provider does **not** rotate the
-  token on its own — the wallet CLI does that during top-up/balance).
-- `tracing` debug logs show a `POST .../v1/chat/completions` with
-  `Authorization: Bearer <token>`.
+- `goose wallet topup` reports `Received N sats. Local wallet balance: N sats.`
+- `goose routstr topup` prints `✓ created api_key for "otrta" with N sats (...)`
+  and `local wallet: 0 sats (N sats sent to proxy)`.
+- The chat replies with the model's response (any non-error completion).
+- `goose routstr balance` shows the active profile with a non-zero
+  balance and the request/spent counters incremented.
 
-Fail signals: 401/403 from the proxy means the token is empty/spent — refill
-via Scenario 2.
+## Scenario 2 — Profile switching with auto-refund
 
-## Scenario 2 — Wallet top-up + balance roundtrip
+Verifies the multi-host workflow.
 
-Verifies that the CDK wallet creates a seed, receives a Cashu token, and
-swaps the balance into a single token written back to `ROUTSTR_API_KEY`.
-
-1. From a fresh `$HOME` (or after deleting `~/.cdk-gooose/`), run
-   `goose wallet balance`.
-2. Expect: `sats: 0`, a new seed is created at `~/.cdk-gooose/seed`, and
-   `ROUTSTR_API_KEY` is set to a Cashu token encoding 0 sats (the swap of an
-   empty balance).
-3. Acquire a funded ecash token (e.g. 100 sats from Minibits) for the
-   configured mint.
-4. Run `goose wallet topup <token>`.
-5. Expect: the balance increases by the token amount; `ROUTSTR_API_KEY` is
-   replaced with a fresh token encoding the new balance.
-6. Run `goose wallet balance` again — value should match step 5; the API key
-   rotates because the wallet swaps unspent outputs each balance call.
-
-## Scenario 3 — Refund-on-top-up
-
-Verifies `handle_refund`: before swapping, the wallet POSTs the *current*
-`ROUTSTR_API_KEY` to `<ROUTSTR_HOST>/v1/wallet/refund` and re-claims any
-unused sats from the proxy.
-
-1. Set up Scenario 2 with a non-zero balance.
-2. Run a chat request (Scenario 1) so the proxy debits some sats but not all.
-3. Run `goose wallet topup <new-token>`.
+```sh
+goose routstr profile add upstream --url https://api.routstr.com
+goose routstr profile use upstream
+goose routstr balance
+```
 
 Pass criteria:
 
-- Tracing log: `Claimed change from mint: <N> sats.` for some `N > 0`.
-- After top-up, the wallet balance equals
-  `(remaining sats refunded) + (top-up sats received)`.
-- `ROUTSTR_API_KEY` is cleared (`clear_current_token`) by the refund path
-  before the new token is written.
+- `profile use` prints `✓ refunded N sats from "<old>" into local wallet`.
+- The same call prints `✓ active routstr profile is now "upstream"`.
+- If the local wallet has sats, the same call prints
+  `✓ created api_key for "upstream" with M sats (...)` (auto-topup).
+- `goose routstr balance` shows the old profile with `(no api_key — fund
+  with goose routstr topup)` and the new profile funded.
 
-Fail signals: a `Failed to claim change: …` error in logs means the proxy
-refused or the mint rejected the refund — capture the offending token from
-the error log for debugging.
+Repeat in reverse to confirm symmetric behaviour:
+
+```sh
+goose routstr profile use otrta
+goose routstr balance
+```
+
+## Scenario 3 — Manual refund
+
+```sh
+goose routstr refund
+goose wallet balance
+```
+
+Pass criteria:
+
+- The refund prints `✓ refunded N sats from "<active>" into local wallet`.
+- The local wallet balance increases by ~N (Routstr's per-token mint
+  fees may shave a few sats).
+- The active profile's `api_key` is cleared in `~/.config/goose/config.yaml`.
 
 ## Scenario 4 — Withdraw
 
-Verifies `handle_wallet_withdraw`: drains the wallet (or a partial amount)
-into a Cashu token printed on stdout.
+Drains the local wallet to a Cashu token (no proxy involved).
 
-1. Start with a non-zero balance from Scenario 2.
-2. `goose wallet withdraw 50` — expect a single ecash token on stdout
-   encoding 50 sats and the wallet balance to drop by 50.
-3. `goose wallet withdraw` (no amount) — expect a token encoding the full
-   remaining balance and a balance of 0 afterwards.
-4. `goose wallet withdraw` on an empty wallet — expect `Wallet is empty.`
-   on stdout, no token, no panic.
+```sh
+goose wallet withdraw 250
+goose wallet withdraw           # drain remainder
+goose wallet withdraw           # on empty wallet
+```
 
-Pass criteria: the printed token can be received by an external Cashu wallet
-and the amount matches.
+Pass criteria:
+
+- First call prints a `cashuB...` token (≥250 sats) and decreases the
+  local balance by 250.
+- Second call prints a token for the remaining balance.
+- Third call prints `Local wallet is empty.` with no token.
+
+## Scenario 5 — Insufficient balance error
+
+```sh
+# from a low-balance profile, ask for an expensive model
+goose run --provider routstr --model gpt-5.5-openai --text "hi" --no-session -q
+```
+
+Pass criteria:
+
+- The error message reads
+  `Insufficient balance: <N> sats required. Please top up your balance to continue.`
+- `<N>` is the proxy's per-model minimum (e.g. ~3400 sats on
+  `routstr.otrta.me` for `gpt-5.5-openai`), normalised to integer sats
+  even when the proxy reports millisats.
+- `goose routstr topup <larger-N>` followed by a retry succeeds.
 
 ## Edge cases worth covering
 
-- **Empty top-up:** `goose wallet topup ""` should print
-  `No token provided. Operation cancelled.` and not mutate the wallet.
-- **Token already spent:** topping up with a previously-redeemed token
-  surfaces `Failed to claim change: …` and leaves the balance unchanged.
-- **Mint unreachable:** point `DEFAULT_MINT_URL` at a bogus host; wallet ops
-  should fail loudly rather than hang. CDK uses the wallet's `timeout`
-  (`OPENAI_TIMEOUT`, default 600s) — keep this in mind for CI.
-- **Anthropic model branch:** `supports_cache_control()` returns `true` for
-  any model whose name starts with `anthropic/`, which triggers
-  `update_request_for_anthropic` before posting. Run Scenario 1 with both
-  an Anthropic and a non-Anthropic model from `ROUTSTR_KNOWN_MODELS` to
-  exercise both paths.
-- **`fetch_supported_models`:** the provider lists models from
-  `<host>/v1/models`. Point `ROUTSTR_HOST` at an unreachable address and
-  confirm `goose providers list` surfaces a clear error rather than
-  panicking.
-- **Insufficient balance:** the provider maps a 400 response with
-  `code: "insufficient_balance"` to `ProviderError::InsufficientBalance(sats)`
-  so the CLI prompts the user to top up. Drain the wallet (Scenario 4),
-  then run a chat request — the error message should include the missing
-  sat count.
+- **Empty topup token:** `goose wallet topup ""` prints
+  `No token provided. Operation cancelled.` and doesn't touch the wallet.
+- **Already-spent token:** running `goose wallet topup` twice with the
+  same token surfaces `Failed to receive token: ...` from CDK and leaves
+  the balance unchanged.
+- **Mint mismatch:** point a profile at a Routstr instance that doesn't
+  trust Minibits. `goose routstr topup` against that profile should fail
+  with a 4xx from `/v1/balance/create` and not consume local sats.
+- **Refund of an already-spent api_key:** if the proxy reports the key
+  exhausted, `goose routstr profile use` logs a warning and proceeds —
+  re-running `goose routstr profile use <old>` should be a no-op.
+- **`goose configure → Configure Providers → Routstr`:** with the active
+  profile having a funded `sk-`, configure should fetch
+  `<url>/v1/models` and present an interactive picker. Without an
+  `sk-` key, configure fails with the actionable
+  `Routstr profile "<name>" has no api_key yet. Run goose routstr topup`
+  message.
+- **Stringified `sats` field on refund:** some Routstr instances return
+  `{"token": "...", "sats": "976"}` (string). `parse_response` accepts
+  both stringified and integer-form sats/msats — covered by
+  `routstr_api::tests::refund_amount_accepts_stringified_sats`.
+
+## Test harness summary
+
+```sh
+cargo test -p goose --no-default-features --features "rustls-tls" \
+  --lib providers::routstr providers::routstr_api
+```
+
+12 unit tests cover:
+- model-list parsing for both Routstr schemas (minimal + rich)
+- insufficient-balance error parsing for both response envelopes
+- mSats → sats normalisation including stringified amounts
+- balance-info / balance-create response parsing with extra fields
+- `require_api_key` gate on the chat path

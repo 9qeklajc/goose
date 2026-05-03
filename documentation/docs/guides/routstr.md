@@ -2,183 +2,206 @@
 sidebar_position: 50
 title: Routstr (Cashu-paid LLM proxy)
 sidebar_label: Routstr
-description: Use the Routstr Cashu-paid LLM proxy with goose, switch hosts, and list available models
+description: Use the Routstr Cashu-paid LLM proxy with goose, manage multiple proxy profiles, and switch between them
 ---
 
 # Routstr
 
 [Routstr](https://routstr.com/docs) is an OpenAI-compatible LLM proxy that
 bills per request in Bitcoin sats via [Cashu](https://cashu.space/) ecash
-tokens. goose ships a `routstr` provider that talks to any Routstr instance
-(the public `https://api.routstr.com` or your own self-hosted one) and a
-`goose wallet` subcommand that manages the Cashu balance the proxy spends.
+tokens. goose ships:
 
-This guide walks through:
+- a `routstr` provider that talks to any Routstr instance via a per-profile
+  `sk-...` API key
+- a single shared local Cashu wallet (`goose wallet …`) that holds your sats
+- a `goose routstr …` subcommand that manages multiple Routstr **profiles**
+  and moves sats between the local wallet and the proxy
 
-- listing the models a Routstr instance offers
-- switching between Routstr hosts (default vs. self-hosted)
-- the env vars that override the same settings without the interactive flow
+This guide walks the full setup, the multi-profile workflow, and the
+auto-refund-on-switch flow. For the wallet internals see the
+[wallet guide](./routstr-wallet.md); for the QA matrix see the
+[test scenario doc](./routstr-test-scenario.md).
 
-For the full wallet workflow (top-up, balance, withdraw, refund-on-top-up),
-see the [Routstr wallet guide](./routstr-wallet.md). For the QA / regression
-matrix, see the [test scenario doc](./routstr-test-scenario.md).
+## Mental model — three pieces
 
-## One-time setup
+1. **The local Cashu wallet** (`~/.cdk-gooose/`). One BIP-39 seed, one redb
+   proof store, one mint (Minibits, hardcoded). This is your source of
+   truth for sats. Every Routstr top-up drains some of these sats; every
+   Routstr refund deposits some back.
+2. **A Routstr profile.** A name, a URL, and (once funded) an `sk-...`
+   API key the proxy issued in exchange for a Cashu token. You can have
+   any number of profiles — `otrta`, `upstream`, `self-hosted`, … — and
+   switch between them.
+3. **Active profile pointer** (`ROUTSTR_ACTIVE`). Names whichever profile
+   should answer the next chat request. `goose routstr profile use <name>`
+   moves it.
 
-The Routstr provider is a two-step setup: fund the wallet first, then run
-`goose configure`. The configure flow only ever asks for `ROUTSTR_HOST` —
-the API key is a Cashu token that `goose wallet topup` writes for you.
+The Cashu token you minted in an external wallet **never lives in goose's
+config** — it's redeemed into the local wallet on `goose wallet topup`,
+and from there can be split per-profile by `goose routstr topup`.
 
-```sh
-goose wallet topup cashuB...   # 1. fund the wallet (see Wallet quickstart below)
-goose configure                # 2. pick Routstr, confirm host, choose a model
-```
-
-In the configure flow:
-
-1. **Pick Configure Providers → Routstr** from the picker.
-2. **Confirm `ROUTSTR_HOST`.** Press Enter to keep the default
-   (`https://api.routstr.com`), or type a new URL to point at another
-   instance.
-3. **Pick a model.** goose calls `<host>/v1/models` and presents the list
-   interactively. With many models the picker switches to a search prompt —
-   type `claude`, `gemini`, `llama`, etc. to narrow it down.
-
-Goose writes `GOOSE_PROVIDER=routstr` and `GOOSE_MODEL=<your-pick>` on save.
-
-> **Heads-up:** if you run `goose configure → Routstr` *before* you've topped
-> up the wallet, the model fetch will fail with
-> `ROUTSTR_API_KEY is not set. Run \`goose wallet topup <cashu-token>\` to
-> fund your Cashu wallet, then retry.` Top up first, then re-run configure.
-
-## Listing models
-
-The list is whatever `<host>/v1/models` returns at the time you ran
-`configure`, so it always matches the host you pointed at. To refresh the list
-(say, the proxy added a new model), re-run:
+## End-to-end quickstart
 
 ```sh
-goose configure
-```
-
-… and pick **Configure Providers → Routstr** again. The flow only re-asks
-for `ROUTSTR_HOST`; the API key stays whatever the wallet last wrote.
-
-If you only want to peek at the catalogue without going through `configure`,
-you can hit the same endpoint directly:
-
-```sh
-curl -H "Authorization: Bearer $ROUTSTR_API_KEY" \
-     "${ROUTSTR_HOST:-https://api.routstr.com}/v1/models" | jq '.data[].id'
-```
-
-## Switching the base URL
-
-`ROUTSTR_HOST` controls which Routstr instance goose talks to. The default is
-`https://api.routstr.com`. To point at a self-hosted Routstr:
-
-### Option 1 — `goose configure` (persistent)
-
-Run `goose configure → Configure Providers → Routstr`. The first prompt is
-`ROUTSTR_HOST`; type the new URL and press Enter.
-
-```text
-●  ROUTSTR_HOST is already configured
-?  Would you like to update this value? Yes
-?  Enter new value for ROUTSTR_HOST: https://routstr.my-company.internal
-```
-
-The change is written to `~/.config/goose/config.yaml`. Re-running `configure`
-later picks up the new host on the very next model fetch.
-
-### Option 2 — env var (per-shell override)
-
-```sh
-export ROUTSTR_HOST="https://routstr.my-company.internal"
-export ROUTSTR_API_KEY="cashuB..."
-goose session start
-```
-
-Env vars beat the config file, so this is the right path for one-off testing
-or pinning a specific host inside a script. Unsetting the env var falls back
-to whatever's in `config.yaml`.
-
-### Option 3 — edit the config file
-
-```yaml
-# ~/.config/goose/config.yaml
-ROUTSTR_HOST: https://routstr.my-company.internal
-ROUTSTR_API_KEY: cashuB...
-```
-
-Useful when you're scripting setup across machines.
-
-## Host-switch checklist
-
-Different Routstr instances usually trust different Cashu mints. When you
-swap `ROUTSTR_HOST`:
-
-- **Make sure your wallet's mint matches.** `goose wallet` defaults to
-  `https://mint.minibits.cash/Bitcoin`. If the new host trusts a different
-  mint, the proxy will reject your token with `401 / 403`.
-- **Re-run `goose configure`** so goose refreshes its model list against the
-  new host. The previous host's `GOOSE_MODEL` may not exist on the new one.
-- **Check the balance.** After switching, run `goose wallet balance` to
-  confirm `ROUTSTR_API_KEY` still encodes a valid token for the new host's
-  mint. If it doesn't, top up against the right mint first.
-
-## Wallet quickstart
-
-The Cashu wallet ships as `goose wallet` and writes its seed to
-`~/.cdk-gooose/`:
-
-```sh
-# create / open the wallet
-goose wallet balance
-
-# add 100 sats from a token issued by an external Cashu wallet
+# 1. Get a Cashu token from any external Cashu wallet (Minibits, Cashu.me).
+#    Receive it into your local goose wallet:
 goose wallet topup cashuB...
 
-# drain (or partially drain) the wallet back to a Cashu token
-goose wallet withdraw 50
+# 2. Register the Routstr instance you want to use:
+goose routstr profile add default --url https://api.routstr.com
+
+# 3. Fund the profile from your local wallet (default 2000 sats):
+goose routstr topup            # or `goose routstr topup 500` for a custom amount
+# → creates an sk-... api_key on the proxy and stores it under the profile.
+
+# 4. Pick a model and chat:
+goose configure                # → Configure Providers → Routstr
+goose run --provider routstr --model anthropic/claude-sonnet-4 \
+  --text "hi from a Cashu-paid wallet"
 ```
 
-`balance` and `topup` consolidate proofs into a single ecash token and write
-it back to `ROUTSTR_API_KEY`, so the next chat request has a fresh token.
+`goose configure → Configure Providers → Routstr` lists the active
+profile's models (interactive picker against `<active-url>/v1/models`).
+Behind the scenes, the chat path uses the profile's `sk-` key as the
+`Authorization: Bearer …` header.
 
-The full top-up workflow — including the refund-on-top-up step that reclaims
-unspent sats from Routstr before each top-up — is documented in the
-[Routstr wallet guide](./routstr-wallet.md).
+## Multiple profiles
 
-## Configuration reference
-
-| Key               | Source                            | Default                        | Notes                                                                                       |
-| ----------------- | --------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------- |
-| `ROUTSTR_API_KEY` | `goose wallet topup/balance/withdraw` | —                          | Cashu token written by the wallet. **Not** prompted in `goose configure` and not stored in the keychain (the wallet rewrites it on every consolidate). |
-| `ROUTSTR_HOST`    | `goose configure → Routstr`, env var, or `~/.config/goose/config.yaml` | `https://api.routstr.com` | Base URL of the Routstr proxy. The only key the configure flow asks about. |
-
-`goose configure` only prompts for `ROUTSTR_HOST`; the API key is
-intentionally invisible to the configure flow because the wallet owns it.
-If the API key isn't set when the model fetch runs, configure fails fast
-with a clear "run `goose wallet topup` first" hint.
-
-## Anthropic prompt caching
-
-When `GOOSE_MODEL` starts with `anthropic/`, the provider applies the same
-prompt-caching markers as the OpenRouter provider — `cache_control: ephemeral`
-on the system message, the last two user turns, and the final tool spec.
-Routstr forwards these unchanged to Anthropic's underlying endpoint, so cache
-hits accrue on subsequent turns within the same session. No configuration
-required.
-
-## Insufficient balance
-
-If the proxy returns a `400` or `402` with `code: "insufficient_balance"`,
-goose maps it to `ProviderError::InsufficientBalance(<sats>)` and surfaces a
-clear top-up prompt instead of a generic 4xx. Fix it with:
+Add as many as you want:
 
 ```sh
-goose wallet topup <new-cashu-token>
+goose routstr profile add otrta       --url https://routstr.otrta.me
+goose routstr profile add self-hosted --url https://routstr.example.internal
+goose routstr profile list
 ```
 
-… and retry the chat request.
+```text
+active    name                       url                                       balance
+  *       default                    https://api.routstr.com                   1923 sats (1923000 mSats)
+          otrta                      https://routstr.otrta.me                  (no api_key yet)
+          self-hosted                https://routstr.example.internal          (no api_key yet)
+```
+
+Each profile keeps its own `sk-` key, balance, request count, etc. on the
+respective proxy.
+
+## Switching — what `goose routstr profile use <name>` actually does
+
+```sh
+goose routstr profile use otrta
+```
+
+Three things, in order:
+
+1. **Refund the active profile.** POST `<active-url>/v1/balance/refund`
+   with the active `sk-` key. The proxy returns a Cashu token encoding all
+   unspent sats. Goose redeems that token into the **local wallet** and
+   clears the `sk-` key from the old profile (it's now consumed).
+2. **Flip `ROUTSTR_ACTIVE`** to the new profile name.
+3. **Auto-topup the new profile.** If the new profile's tracked balance is
+   less than 2000 sats (or it has no `sk-` yet), goose drains
+   `min(2000 sats, local-wallet-balance)` from the local wallet and
+   exchanges it for a fresh `sk-` on the new proxy.
+
+The end state: previous profile is empty, new profile is funded, your
+local wallet absorbed any unspent change. If the refund call fails (proxy
+down, key already consumed, etc.) goose logs a warning and proceeds with
+the switch — re-run `goose routstr profile use <old>` later to retry the
+refund.
+
+```text
+$ goose routstr profile use otrta
+✓ refunded 976 sats from "default" into local wallet
+✓ active routstr profile is now "otrta"
+✓ created api_key for "otrta" with 976 sats (976000 mSats) initial balance
+  local wallet: 0 sats (976 sats sent to proxy)
+```
+
+## Manual top-up / refund (without switching)
+
+```sh
+goose routstr topup            # active profile, +2000 sats from local wallet
+goose routstr topup 500        # active profile, +500 sats
+goose routstr refund           # drain the active profile's balance back to local
+```
+
+`refund` is also useful before swapping mints — drain the active profile
+first, then reconfigure goose's local wallet (manual today; see the
+[Limitations](#limitations) note).
+
+## Removing a profile
+
+```sh
+goose routstr profile remove self-hosted
+```
+
+Goose calls `/v1/balance/refund` first so any unspent sats come back to
+the local wallet, then drops the profile from config. If the refund
+fails (proxy unreachable), the profile is dropped anyway with a warning;
+the api_key is logged so you can manually refund later.
+
+## How the proxy-side bits work
+
+| Goose action | Proxy endpoint | Effect |
+| --- | --- | --- |
+| `goose routstr topup` (first time) | `GET /v1/balance/create?initial_balance_token=<cashu>` | Proxy mints an `sk-...` key with balance = the token's sats. |
+| `goose routstr topup` (subsequent) | `POST /v1/balance/topup?cashu_token=<cashu>` with `Bearer sk-...` | Proxy adds the token's sats to the existing key's balance. |
+| `goose routstr refund` | `POST /v1/balance/refund` with `Bearer sk-...` | Proxy returns a Cashu token for the entire remaining balance and zeroes the key. |
+| `goose routstr balance` (per profile) | `GET /v1/balance/info` with `Bearer sk-...` | Proxy returns balance, reserved, request counts, total spent. |
+| chat completion | `POST /v1/chat/completions` with `Bearer sk-...` | Proxy debits the cost from the key's tracked balance. |
+
+## Insufficient balance during chat
+
+If the proxy returns `Insufficient balance: <N> sats required` during a
+chat call (commonly because a high-cost model has a higher per-request
+escrow than what's left in your tracked balance), goose surfaces the
+exact sats number you need. Top up with:
+
+```sh
+goose routstr topup            # +2000 sats from local wallet
+# - or, if local wallet is empty -
+goose wallet topup cashuB...   # add sats to local first
+goose routstr topup
+```
+
+## Switching the host without `goose configure`
+
+Three escape hatches if you want to bypass the interactive flow:
+
+```sh
+# (a) per-shell override of the active profile's URL:
+export ROUTSTR_HOST="https://routstr.example.internal"
+
+# (b) edit the config directly:
+$EDITOR ~/.config/goose/config.yaml
+# tweak ROUTSTR_PROFILES.<name>.url, then run:
+goose routstr profile list
+
+# (c) just `goose routstr profile use <name>` to switch among existing profiles
+```
+
+Env var `ROUTSTR_HOST` wins over the config file for the duration of the
+shell session.
+
+## Limitations
+
+- **Minibits is the only supported mint** (`https://mint.minibits.cash/Bitcoin`,
+  hardcoded in `crates/goose-cli/src/commands/wallet.rs` as
+  `DEFAULT_MINT_URL`). Cashu tokens minted at any other mint will fail to
+  receive into the local wallet, and Routstr instances that trust a
+  different mint will reject `sk-` keys created with the wrong mint's
+  proofs.
+- **One BIP-39 seed for the whole wallet.** All sats live under
+  `~/.cdk-gooose/seed`; lose that file and the proofs in `cdk-goose.redb`
+  are unrecoverable. There is no per-profile seed.
+- **`ROUTSTR_PROFILES` lives in plaintext** at `~/.config/goose/config.yaml`.
+  The `sk-` keys are stored alongside the URLs (file permissions are your
+  only barrier on a shared machine). The wallet's seed is similarly
+  plaintext at `~/.cdk-gooose/seed`. Treat both as private keys.
+- **The Routstr provider isn't selectable as a configure-time prompt
+  beyond model picking.** The `goose configure → Routstr` flow runs against
+  the *active* profile (whatever `goose routstr profile use` last set).
+  To configure a different profile, switch first.
+- **High-min-escrow models on community proxies can still 402 with a
+  small balance.** The error message tells you the proxy's minimum; top
+  up to at least that and retry.

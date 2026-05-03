@@ -6,11 +6,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::api_client::{ApiClient, AuthMethod};
-use super::base::{ConfigKey, MessageStream, Provider, ProviderDef, ProviderMetadata};
+use super::base::{MessageStream, Provider, ProviderDef, ProviderMetadata};
 use super::errors::{OpenAIError, ProviderError};
 use super::http_status::map_http_error_to_provider_error;
 use super::openai_compatible::stream_openai_compat;
 use super::retry::ProviderRetry;
+use super::routstr_api::{active_profile_name, load_profile, ROUTSTR_DEFAULT_HOST};
+#[cfg(test)]
+use super::routstr_api::ROUTSTR_DEFAULT_PROFILE;
 use super::utils::{ImageFormat, RequestLog};
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
@@ -18,7 +21,7 @@ use crate::providers::formats::openai::create_request;
 use rmcp::model::Tool;
 
 const ROUTSTR_PROVIDER_NAME: &str = "routstr";
-pub const ROUTSTR_HOST: &str = "https://api.routstr.com";
+pub const ROUTSTR_HOST: &str = ROUTSTR_DEFAULT_HOST;
 pub const ROUTSTR_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4";
 pub const ROUTSTR_MODEL_PREFIX_ANTHROPIC: &str = "anthropic";
 
@@ -75,30 +78,51 @@ pub struct RoutstrProvider {
     model: ModelConfig,
     #[serde(skip)]
     name: String,
-    /// Whether `ROUTSTR_API_KEY` was set when the provider was constructed.
-    /// Used to surface a "run `goose wallet topup` first" hint when the user
-    /// hits an authenticated endpoint (chat completions, /v1/models) without
-    /// having funded the wallet yet.
+    /// Whether the active profile had a non-empty `api_key` when the
+    /// provider was constructed. Used to surface a "fund this profile
+    /// first" hint when chat / /v1/models is called against an unfunded
+    /// profile.
     has_api_key: bool,
+    /// Name of the active profile this instance was built from. Surfaced
+    /// in error messages so the user knows which profile to fund.
+    #[serde(skip)]
+    profile_name: String,
 }
 
 impl RoutstrProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
 
-        let host: String = config
-            .get_param("ROUTSTR_HOST")
-            .unwrap_or_else(|_| ROUTSTR_HOST.to_string());
+        // Resolve the active profile.
+        //
+        // ROUTSTR_HOST (env var or top-level config key) is honoured as a
+        // legacy single-host override: if set, it forces this run to use the
+        // given URL with whatever api_key the active profile has stored.
+        // Otherwise the `{ROUTSTR_PROFILES, ROUTSTR_ACTIVE}` pair is the
+        // source of truth.
+        let env_host_override: Option<String> = std::env::var("ROUTSTR_HOST")
+            .ok()
+            .or_else(|| config.get_param::<String>("ROUTSTR_HOST").ok());
 
-        // ROUTSTR_API_KEY is a Cashu token managed by the wallet CLI
-        // (`goose wallet topup/withdraw/balance`), so it lives in the regular
-        // params store rather than the secrets keychain — the wallet has to
-        // rewrite it on every consolidate. The provider tolerates a missing
-        // value here so `goose configure → Routstr` can run before the user
-        // has topped up; the "wallet not funded" condition surfaces later as
-        // a friendly error from `fetch_supported_models`/`stream`.
-        let api_key: String = config.get_param("ROUTSTR_API_KEY").unwrap_or_default();
+        let active = active_profile_name(config);
+        let profile = load_profile(config, Some(&active))
+            .map(|(_, p)| p)
+            .unwrap_or_default();
+
+        let host = env_host_override
+            .filter(|h| !h.trim().is_empty())
+            .or_else(|| {
+                if profile.url.trim().is_empty() {
+                    None
+                } else {
+                    Some(profile.url.clone())
+                }
+            })
+            .unwrap_or_else(|| ROUTSTR_DEFAULT_HOST.to_string());
+
+        let api_key = profile.api_key.clone();
         let has_api_key = !api_key.trim().is_empty();
+        let profile_name = active;
 
         let api_client = ApiClient::new(host, AuthMethod::BearerToken(api_key))?;
 
@@ -107,14 +131,16 @@ impl RoutstrProvider {
             model,
             name: ROUTSTR_PROVIDER_NAME.to_string(),
             has_api_key,
+            profile_name,
         })
     }
 
     fn require_api_key(&self) -> Result<(), ProviderError> {
         if !self.has_api_key {
-            return Err(ProviderError::Authentication(
-                "ROUTSTR_API_KEY is not set. Run `goose wallet topup <cashu-token>` to fund your Cashu wallet, then retry.".to_string(),
-            ));
+            return Err(ProviderError::Authentication(format!(
+                "Routstr profile {:?} has no api_key yet. Run `goose routstr topup` (or `goose routstr profile use <name>`) to fund it from your local Cashu wallet, then retry.",
+                self.profile_name
+            )));
         }
         Ok(())
     }
@@ -267,25 +293,19 @@ impl ProviderDef for RoutstrProvider {
             ROUTSTR_DEFAULT_MODEL,
             ROUTSTR_KNOWN_MODELS.to_vec(),
             ROUTSTR_DOC_URL,
-            // ROUTSTR_API_KEY is intentionally **not** advertised here:
-            // it's a Cashu token managed by `goose wallet topup/balance/
-            // withdraw`, not a credential the user should be typing into a
-            // configure prompt. Listing only ROUTSTR_HOST keeps `goose
-            // configure → Routstr` to a single, useful question and avoids
-            // the wallet/keychain mismatch (the wallet has to rewrite the
-            // value on every consolidate, so it can't live in a secret store).
-            vec![ConfigKey::new(
-                "ROUTSTR_HOST",
-                false,
-                false,
-                Some(ROUTSTR_HOST),
-                true,
-            )],
+            // No config keys are advertised: Routstr setup is driven by
+            // `goose routstr profile {add,use,topup}` against the Cashu
+            // wallet, not by configure-time prompts. The active profile's
+            // `{url, api_key}` lives under ROUTSTR_PROFILES/ROUTSTR_ACTIVE
+            // and is wholly owned by those subcommands. ROUTSTR_HOST is
+            // still honoured as a per-shell override at runtime.
+            vec![],
         )
         .with_setup_steps(vec![
-            "Run `goose wallet topup <cashu-token>` to fund the Cashu wallet (sets ROUTSTR_API_KEY for you).",
-            "Run `goose configure → Configure Providers → Routstr` and confirm the Routstr host.",
-            "Pick a model from the list goose fetches from `<ROUTSTR_HOST>/v1/models`.",
+            "Top up the local Cashu wallet: `goose wallet topup <cashu-token>`.",
+            "Add a Routstr profile: `goose routstr profile add default --url https://api.routstr.com`.",
+            "Fund the active profile from the local wallet: `goose routstr topup` (default 2000 sats).",
+            "List models against the proxy: `goose configure → Configure Providers → Routstr`.",
         ])
     }
 
@@ -480,11 +500,12 @@ mod tests {
             model: ModelConfig::new_or_fail(ROUTSTR_DEFAULT_MODEL),
             name: ROUTSTR_PROVIDER_NAME.to_string(),
             has_api_key: false,
+            profile_name: ROUTSTR_DEFAULT_PROFILE.to_string(),
         };
         let err = provider.require_api_key().unwrap_err();
         assert!(
-            matches!(err, ProviderError::Authentication(ref msg) if msg.contains("goose wallet topup")),
-            "expected wallet-topup hint, got: {err:?}"
+            matches!(err, ProviderError::Authentication(ref msg) if msg.contains("goose routstr topup")),
+            "expected goose-routstr-topup hint, got: {err:?}"
         );
     }
 
@@ -493,12 +514,13 @@ mod tests {
         let provider = RoutstrProvider {
             api_client: ApiClient::new(
                 ROUTSTR_HOST.to_string(),
-                AuthMethod::BearerToken("cashuB...".to_string()),
+                AuthMethod::BearerToken("sk-deadbeef".to_string()),
             )
             .unwrap(),
             model: ModelConfig::new_or_fail(ROUTSTR_DEFAULT_MODEL),
             name: ROUTSTR_PROVIDER_NAME.to_string(),
             has_api_key: true,
+            profile_name: ROUTSTR_DEFAULT_PROFILE.to_string(),
         };
         assert!(provider.require_api_key().is_ok());
     }

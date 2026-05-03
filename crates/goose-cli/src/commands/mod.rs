@@ -4,6 +4,7 @@ pub mod gateway;
 pub mod info;
 pub mod project;
 pub mod recipe;
+pub mod routstr;
 pub mod schedule;
 pub mod session;
 pub mod term;
