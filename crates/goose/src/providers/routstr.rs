@@ -39,21 +39,32 @@ pub struct ModelPricing {
     pub completion: f64,
 }
 
-/// Individual model information returned by `/v1/models`.
+/// Individual model information returned by `/v1/models`. Fields are kept
+/// optional because different Routstr instances expose different shapes —
+/// upstream `api.routstr.com` returns a richer schema (`name`, `description`,
+/// `architecture`, `sats_pricing`, …) without `object`/`owned_by`/`permission`,
+/// while `routstr.otrta.me` returns the OpenAI-compatible minimum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub id: String,
-    pub object: String,
-    pub created: i64,
-    pub owned_by: String,
-    pub permission: Vec<Value>,
-    pub pricing: ModelPricing,
-    pub context_length: u32,
+    #[serde(default)]
+    pub object: Option<String>,
+    #[serde(default)]
+    pub created: Option<i64>,
+    #[serde(default)]
+    pub owned_by: Option<String>,
+    #[serde(default)]
+    pub permission: Option<Vec<Value>>,
+    #[serde(default)]
+    pub pricing: Option<ModelPricing>,
+    #[serde(default)]
+    pub context_length: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsResponse {
-    pub object: String,
+    #[serde(default)]
+    pub object: Option<String>,
     pub data: Vec<ModelInfo>,
 }
 
@@ -64,6 +75,11 @@ pub struct RoutstrProvider {
     model: ModelConfig,
     #[serde(skip)]
     name: String,
+    /// Whether `ROUTSTR_API_KEY` was set when the provider was constructed.
+    /// Used to surface a "run `goose wallet topup` first" hint when the user
+    /// hits an authenticated endpoint (chat completions, /v1/models) without
+    /// having funded the wallet yet.
+    has_api_key: bool,
 }
 
 impl RoutstrProvider {
@@ -77,8 +93,12 @@ impl RoutstrProvider {
         // ROUTSTR_API_KEY is a Cashu token managed by the wallet CLI
         // (`goose wallet topup/withdraw/balance`), so it lives in the regular
         // params store rather than the secrets keychain — the wallet has to
-        // rewrite it on every consolidate.
-        let api_key: String = config.get_param("ROUTSTR_API_KEY")?;
+        // rewrite it on every consolidate. The provider tolerates a missing
+        // value here so `goose configure → Routstr` can run before the user
+        // has topped up; the "wallet not funded" condition surfaces later as
+        // a friendly error from `fetch_supported_models`/`stream`.
+        let api_key: String = config.get_param("ROUTSTR_API_KEY").unwrap_or_default();
+        let has_api_key = !api_key.trim().is_empty();
 
         let api_client = ApiClient::new(host, AuthMethod::BearerToken(api_key))?;
 
@@ -86,10 +106,22 @@ impl RoutstrProvider {
             api_client,
             model,
             name: ROUTSTR_PROVIDER_NAME.to_string(),
+            has_api_key,
         })
     }
 
+    fn require_api_key(&self) -> Result<(), ProviderError> {
+        if !self.has_api_key {
+            return Err(ProviderError::Authentication(
+                "ROUTSTR_API_KEY is not set. Run `goose wallet topup <cashu-token>` to fund your Cashu wallet, then retry.".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn fetch_models_info(&self) -> Result<ModelsResponse, ProviderError> {
+        self.require_api_key()?;
+
         let response = self
             .api_client
             .response_get(None, "v1/models")
@@ -235,17 +267,25 @@ impl ProviderDef for RoutstrProvider {
             ROUTSTR_DEFAULT_MODEL,
             ROUTSTR_KNOWN_MODELS.to_vec(),
             ROUTSTR_DOC_URL,
-            vec![
-                // Cashu token managed by `goose wallet`; not a keychain secret
-                // because the wallet has to rewrite it on every consolidate.
-                ConfigKey::new("ROUTSTR_API_KEY", true, false, None, true),
-                ConfigKey::new("ROUTSTR_HOST", false, false, Some(ROUTSTR_HOST), false),
-            ],
+            // ROUTSTR_API_KEY is intentionally **not** advertised here:
+            // it's a Cashu token managed by `goose wallet topup/balance/
+            // withdraw`, not a credential the user should be typing into a
+            // configure prompt. Listing only ROUTSTR_HOST keeps `goose
+            // configure → Routstr` to a single, useful question and avoids
+            // the wallet/keychain mismatch (the wallet has to rewrite the
+            // value on every consolidate, so it can't live in a secret store).
+            vec![ConfigKey::new(
+                "ROUTSTR_HOST",
+                false,
+                false,
+                Some(ROUTSTR_HOST),
+                true,
+            )],
         )
         .with_setup_steps(vec![
-            "Run `goose wallet topup <cashu-token>` to seed the routstr balance",
-            "`goose wallet balance` writes a fresh Cashu token to ROUTSTR_API_KEY",
-            "Optionally override ROUTSTR_HOST to point at a self-hosted Routstr",
+            "Run `goose wallet topup <cashu-token>` to fund the Cashu wallet (sets ROUTSTR_API_KEY for you).",
+            "Run `goose configure → Configure Providers → Routstr` and confirm the Routstr host.",
+            "Pick a model from the list goose fetches from `<ROUTSTR_HOST>/v1/models`.",
         ])
     }
 
@@ -288,6 +328,8 @@ impl Provider for RoutstrProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
+        self.require_api_key()?;
+
         let mut payload = create_request(
             model_config,
             system,
@@ -372,5 +414,92 @@ mod tests {
         assert_eq!(parse_insufficient_balance(Some(&payload)), None);
 
         assert_eq!(parse_insufficient_balance(None), None);
+    }
+
+    #[test]
+    fn models_response_parses_minimal_openai_shape() {
+        // The minimal "OpenAI-compatible" shape some Routstr instances
+        // serve: every model has only `id`, no extra fields.
+        let payload = json!({
+            "object": "list",
+            "data": [
+                {"id": "anthropic/claude-sonnet-4"},
+                {"id": "google/gemini-2.5-pro"}
+            ]
+        });
+        let parsed: ModelsResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(parsed.data.len(), 2);
+        assert_eq!(parsed.data[0].id, "anthropic/claude-sonnet-4");
+        assert_eq!(parsed.data[1].id, "google/gemini-2.5-pro");
+    }
+
+    #[test]
+    fn models_response_parses_richer_routstr_shape() {
+        // Richer shape served by api.routstr.com / routstr.otrta.me — extra
+        // fields like name/description/architecture/sats_pricing must not
+        // break the parser, and pricing carries extra entries beyond the
+        // canonical prompt/completion pair.
+        let payload = json!({
+            "data": [
+                {
+                    "id": "gpt-5.5-openai",
+                    "name": "OpenAI: GPT-5.5",
+                    "created": 1773863703,
+                    "description": "OpenAI flagship multimodal model.",
+                    "context_length": 1048576,
+                    "architecture": {"modality": "text+image->text"},
+                    "pricing": {
+                        "prompt": 3.5e-06,
+                        "completion": 2.1e-05,
+                        "request": 0.0,
+                        "image": 0.0
+                    },
+                    "sats_pricing": {"prompt": 0.0035, "completion": 0.021},
+                    "per_request_limits": {},
+                    "top_provider": {},
+                    "enabled": true,
+                    "upstream_provider_id": "openai"
+                }
+            ]
+        });
+        let parsed: ModelsResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(parsed.data.len(), 1);
+        assert_eq!(parsed.data[0].id, "gpt-5.5-openai");
+        assert_eq!(parsed.data[0].context_length, Some(1048576));
+        assert!(parsed.data[0].pricing.is_some());
+    }
+
+    #[test]
+    fn require_api_key_blocks_when_unset() {
+        let provider = RoutstrProvider {
+            api_client: ApiClient::new(
+                ROUTSTR_HOST.to_string(),
+                AuthMethod::BearerToken(String::new()),
+            )
+            .unwrap(),
+            model: ModelConfig::new_or_fail(ROUTSTR_DEFAULT_MODEL),
+            name: ROUTSTR_PROVIDER_NAME.to_string(),
+            has_api_key: false,
+        };
+        let err = provider.require_api_key().unwrap_err();
+        assert!(
+            matches!(err, ProviderError::Authentication(ref msg) if msg.contains("goose wallet topup")),
+            "expected wallet-topup hint, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn require_api_key_passes_when_set() {
+        let provider = RoutstrProvider {
+            api_client: ApiClient::new(
+                ROUTSTR_HOST.to_string(),
+                AuthMethod::BearerToken("cashuB...".to_string()),
+            )
+            .unwrap(),
+            model: ModelConfig::new_or_fail(ROUTSTR_DEFAULT_MODEL),
+            name: ROUTSTR_PROVIDER_NAME.to_string(),
+            has_api_key: true,
+        };
+        assert!(provider.require_api_key().is_ok());
     }
 }

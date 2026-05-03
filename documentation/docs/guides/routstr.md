@@ -25,20 +25,31 @@ matrix, see the [test scenario doc](./routstr-test-scenario.md).
 
 ## One-time setup
 
+The Routstr provider is a two-step setup: fund the wallet first, then run
+`goose configure`. The configure flow only ever asks for `ROUTSTR_HOST` —
+the API key is a Cashu token that `goose wallet topup` writes for you.
+
 ```sh
-goose configure
+goose wallet topup cashuB...   # 1. fund the wallet (see Wallet quickstart below)
+goose configure                # 2. pick Routstr, confirm host, choose a model
 ```
 
-Pick **Configure Providers → Routstr** and enter your Cashu token when prompted
-for `ROUTSTR_API_KEY`. The token comes from `goose wallet topup <cashu-token>`
-(see [the wallet section](#wallet-quickstart)) or any Cashu wallet that funds
-against the same mint Routstr trusts.
+In the configure flow:
 
-After the API key is set, goose calls `<host>/v1/models` and presents an
-interactive list of every model the proxy serves. With many models, the picker
-switches to a search prompt — type `claude`, `llama`, etc. to narrow the list.
-Pick one and goose writes both `GOOSE_PROVIDER=routstr` and `GOOSE_MODEL=<id>`
-to your config.
+1. **Pick Configure Providers → Routstr** from the picker.
+2. **Confirm `ROUTSTR_HOST`.** Press Enter to keep the default
+   (`https://api.routstr.com`), or type a new URL to point at another
+   instance.
+3. **Pick a model.** goose calls `<host>/v1/models` and presents the list
+   interactively. With many models the picker switches to a search prompt —
+   type `claude`, `gemini`, `llama`, etc. to narrow it down.
+
+Goose writes `GOOSE_PROVIDER=routstr` and `GOOSE_MODEL=<your-pick>` on save.
+
+> **Heads-up:** if you run `goose configure → Routstr` *before* you've topped
+> up the wallet, the model fetch will fail with
+> `ROUTSTR_API_KEY is not set. Run \`goose wallet topup <cashu-token>\` to
+> fund your Cashu wallet, then retry.` Top up first, then re-run configure.
 
 ## Listing models
 
@@ -50,9 +61,8 @@ The list is whatever `<host>/v1/models` returns at the time you ran
 goose configure
 ```
 
-… and pick **Configure Providers → Routstr** again. The credentials prompt
-defaults to your existing `ROUTSTR_API_KEY` — press Enter to keep it. The
-model list re-fetches and lets you pick a new default.
+… and pick **Configure Providers → Routstr** again. The flow only re-asks
+for `ROUTSTR_HOST`; the API key stays whatever the wallet last wrote.
 
 If you only want to peek at the catalogue without going through `configure`,
 you can hit the same endpoint directly:
@@ -69,15 +79,13 @@ curl -H "Authorization: Bearer $ROUTSTR_API_KEY" \
 
 ### Option 1 — `goose configure` (persistent)
 
-Run `goose configure → Configure Providers → Routstr`, accept the default for
-`ROUTSTR_API_KEY`, and answer **yes** to *Would you like to configure advanced
-settings?*. You'll then be prompted for `ROUTSTR_HOST`.
+Run `goose configure → Configure Providers → Routstr`. The first prompt is
+`ROUTSTR_HOST`; type the new URL and press Enter.
 
 ```text
-?  Provider Routstr requires the following keys:
-ROUTSTR_API_KEY:    [hidden, press Enter to keep existing]
-?  Would you like to configure advanced settings? Yes
-ROUTSTR_HOST:       https://routstr.my-company.internal
+●  ROUTSTR_HOST is already configured
+?  Would you like to update this value? Yes
+?  Enter new value for ROUTSTR_HOST: https://routstr.my-company.internal
 ```
 
 The change is written to `~/.config/goose/config.yaml`. Re-running `configure`
@@ -144,14 +152,15 @@ unspent sats from Routstr before each top-up — is documented in the
 
 ## Configuration reference
 
-| Key               | Required | Default                        | Notes                                                                                       |
-| ----------------- | -------- | ------------------------------ | ------------------------------------------------------------------------------------------- |
-| `ROUTSTR_API_KEY` | yes      | —                              | Cashu token. Managed by `goose wallet`; not stored in the keychain because the wallet rewrites it on every consolidate. |
-| `ROUTSTR_HOST`    | no       | `https://api.routstr.com`      | Base URL of the Routstr proxy. Override for self-hosted instances.                          |
+| Key               | Source                            | Default                        | Notes                                                                                       |
+| ----------------- | --------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------- |
+| `ROUTSTR_API_KEY` | `goose wallet topup/balance/withdraw` | —                          | Cashu token written by the wallet. **Not** prompted in `goose configure` and not stored in the keychain (the wallet rewrites it on every consolidate). |
+| `ROUTSTR_HOST`    | `goose configure → Routstr`, env var, or `~/.config/goose/config.yaml` | `https://api.routstr.com` | Base URL of the Routstr proxy. The only key the configure flow asks about. |
 
-`ROUTSTR_API_KEY` is required at provider construction; `goose configure`
-prompts for it on first setup. `ROUTSTR_HOST` is optional and only surfaces
-under *advanced settings*.
+`goose configure` only prompts for `ROUTSTR_HOST`; the API key is
+intentionally invisible to the configure flow because the wallet owns it.
+If the API key isn't set when the model fetch runs, configure fails fast
+with a clear "run `goose wallet topup` first" hint.
 
 ## Anthropic prompt caching
 
@@ -164,9 +173,9 @@ required.
 
 ## Insufficient balance
 
-If the proxy returns a `400` with `code: "insufficient_balance"`, goose maps
-it to `ProviderError::InsufficientBalance(<sats>)` and surfaces a clear
-top-up prompt instead of a generic 4xx. Fix it with:
+If the proxy returns a `400` or `402` with `code: "insufficient_balance"`,
+goose maps it to `ProviderError::InsufficientBalance(<sats>)` and surfaces a
+clear top-up prompt instead of a generic 4xx. Fix it with:
 
 ```sh
 goose wallet topup <new-cashu-token>
