@@ -364,6 +364,104 @@ fn short_err(e: &ProviderApiError) -> String {
     }
 }
 
+/// Prompt the user for a Routstr URL and reconcile it with the profile
+/// system. Called from `goose configure → Configure Providers → Routstr`
+/// before the standard model-fetch step so the picker hits whichever URL
+/// the user just chose.
+///
+/// Behaviour:
+/// - If the URL matches the *currently active* profile's URL, no-op.
+/// - If the URL matches some *other* existing profile's URL, switch to
+///   that profile (`goose routstr profile use`) — refunds the previously
+///   active profile back into the local wallet.
+/// - Otherwise, refund the previously active profile, then create a
+///   profile named `default` (or update its URL if `default` already
+///   exists with a different URL) and make it active.
+pub async fn prompt_and_set_routstr_url() -> Result<()> {
+    let config = Config::global();
+
+    let active = active_profile_name(config);
+    let profiles = load_profiles(config)?;
+    let current_url = profiles
+        .get(&active)
+        .map(|p| p.url.clone())
+        .unwrap_or_else(|| ROUTSTR_DEFAULT_HOST.to_string());
+
+    let entered: String = cliclack::input("Routstr URL")
+        .default_input(&current_url)
+        .interact()?;
+    let entered = entered.trim().to_string();
+    if entered.is_empty() {
+        return Ok(());
+    }
+
+    if entered == current_url
+        && profiles.contains_key(&active)
+        && !profiles.is_empty()
+    {
+        let _ = cliclack::log::info(format!(
+            "routstr profile {active:?} already points at {entered}; nothing to do."
+        ));
+        return Ok(());
+    }
+
+    // Clear any legacy top-level `ROUTSTR_HOST` so the profile's URL is
+    // the only source of truth. Older builds wrote a flat `ROUTSTR_HOST`
+    // and our `from_env` honours it as an override — leaving it in place
+    // would silently mask the profile change the user just made.
+    let _ = config.delete("ROUTSTR_HOST");
+
+    // 1. Existing profile with a matching URL → switch to it.
+    if let Some((existing_name, _)) =
+        profiles.iter().find(|(n, p)| **n != active && p.url == entered)
+    {
+        let existing_name = existing_name.clone();
+        let _ = cliclack::log::info(format!(
+            "URL {entered} matches existing routstr profile {existing_name:?}; switching."
+        ));
+        return handle_profile_use(existing_name).await;
+    }
+
+    // 2. Otherwise create / update a `default` profile and switch.
+    //    Refund whatever the currently active profile is holding first
+    //    (best-effort — we don't block the URL change on a refund failure).
+    if let Some(active_profile) = profiles.get(&active) {
+        if !active_profile.api_key.is_empty() {
+            match refund_active_into_wallet(&active, active_profile).await {
+                Ok(sats) => {
+                    let _ = cliclack::log::info(format!(
+                        "refunded {sats} sats from {active:?} into local wallet before changing URL"
+                    ));
+                    let mut updated = active_profile.clone();
+                    updated.api_key.clear();
+                    upsert_profile(config, &active, updated)?;
+                }
+                Err(e) => {
+                    let _ = cliclack::log::warning(format!(
+                        "refund of {active:?} failed: {e}. Continuing anyway; \
+                         retry with `goose routstr profile use {active}` to reclaim those sats."
+                    ));
+                }
+            }
+        }
+    }
+
+    // Pick a name for the new/updated profile. Prefer "default" — if it's
+    // taken with a different URL, overwrite (we just refunded above, so
+    // there's no balance to lose). If the user wants a different name they
+    // can rename via `goose routstr profile add`.
+    let new_name = "default".to_string();
+    let mut profiles = load_profiles(config)?;
+    profiles.insert(new_name.clone(), RoutstrProfile::new(entered.clone()));
+    goose::providers::routstr_api::save_profiles(config, &profiles)?;
+    set_active_profile(config, &new_name)?;
+    let _ = cliclack::log::info(format!(
+        "routstr profile {new_name:?} now points at {entered} and is active. \
+         Run `goose routstr topup` to fund it from your local Cashu wallet."
+    ));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

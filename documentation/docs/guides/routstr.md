@@ -47,23 +47,37 @@ and from there can be split per-profile by `goose routstr topup`.
 #    Receive it into your local goose wallet:
 goose wallet topup cashuB...
 
-# 2. Register the Routstr instance you want to use:
-goose routstr profile add default --url https://api.routstr.com
+# 2. Pick the Routstr instance and a model in one go:
+goose configure                # → Configure Providers → Routstr
+                               # → Routstr URL: https://api.routstr.com
+                               # → pick a model from the proxy's catalogue
 
 # 3. Fund the profile from your local wallet (default 2000 sats):
 goose routstr topup            # or `goose routstr topup 500` for a custom amount
-# → creates an sk-... api_key on the proxy and stores it under the profile.
 
-# 4. Pick a model and chat:
-goose configure                # → Configure Providers → Routstr
+# 4. Chat:
 goose run --provider routstr --model anthropic/claude-sonnet-4 \
   --text "hi from a Cashu-paid wallet"
 ```
 
-`goose configure → Configure Providers → Routstr` lists the active
-profile's models (interactive picker against `<active-url>/v1/models`).
-Behind the scenes, the chat path uses the profile's `sk-` key as the
-`Authorization: Bearer …` header.
+`goose configure → Configure Providers → Routstr` is the single entry
+point for setup:
+
+- Asks for the Routstr URL (defaults to the active profile's URL, or
+  `https://api.routstr.com` if no profile is active).
+- If the URL **matches an existing profile** → switches to it (refunds
+  whatever is in the previously active profile back to your local
+  Cashu wallet first).
+- If the URL **doesn't match any profile** → refunds the previously
+  active profile, creates a new profile named `default` pointing at the
+  new URL, and makes it active.
+- Then fetches `<active-url>/v1/models` and presents the picker. The
+  list is whatever **that** instance serves — instances disagree on
+  which models they expose, and `goose configure` always uses the URL
+  the user just confirmed.
+
+Behind the scenes, the chat path uses the active profile's `sk-` key as
+the `Authorization: Bearer …` header.
 
 ## Multiple profiles
 
