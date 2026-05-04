@@ -138,7 +138,10 @@ impl RoutstrProvider {
     fn require_api_key(&self) -> Result<(), ProviderError> {
         if !self.has_api_key {
             return Err(ProviderError::Authentication(format!(
-                "Routstr profile {:?} has no api_key yet. Run `goose routstr topup` (or `goose routstr profile use <name>`) to fund it from your local Cashu wallet, then retry.",
+                "Routstr profile {:?} has no api_key yet. \
+                 Top up the local Cashu wallet with `goose wallet topup <cashu-token>`, \
+                 then re-run `goose configure → Configure Providers → Routstr` against the same URL — \
+                 configure will auto-fund this profile from the local wallet.",
                 self.profile_name
             )));
         }
@@ -146,8 +149,10 @@ impl RoutstrProvider {
     }
 
     async fn fetch_models_info(&self) -> Result<ModelsResponse, ProviderError> {
-        self.require_api_key()?;
-
+        // `/v1/models` is public on every Routstr instance we've tested
+        // (api.routstr.com and routstr.otrta.me both serve it without
+        // auth). Don't gate this on `has_api_key` — letting the user
+        // browse the catalogue before topping up a profile is a feature.
         let response = self
             .api_client
             .response_get(None, "v1/models")
@@ -504,8 +509,8 @@ mod tests {
         };
         let err = provider.require_api_key().unwrap_err();
         assert!(
-            matches!(err, ProviderError::Authentication(ref msg) if msg.contains("goose routstr topup")),
-            "expected goose-routstr-topup hint, got: {err:?}"
+            matches!(err, ProviderError::Authentication(ref msg) if msg.contains("goose wallet topup") && msg.contains("goose configure")),
+            "expected wallet-topup + configure hint, got: {err:?}"
         );
     }
 

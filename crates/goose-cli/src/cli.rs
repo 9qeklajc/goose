@@ -25,11 +25,6 @@ use crate::commands::schedule::{
     handle_schedule_run_now, handle_schedule_services_status, handle_schedule_services_stop,
     handle_schedule_sessions,
 };
-use crate::commands::routstr::{
-    handle_balance as handle_routstr_balance, handle_profile_add, handle_profile_list,
-    handle_profile_remove, handle_profile_use, handle_refund as handle_routstr_refund,
-    handle_topup as handle_routstr_topup,
-};
 use crate::commands::session::{handle_session_list, handle_session_remove};
 use crate::commands::wallet::{
     handle_wallet_balance, handle_wallet_topup, handle_wallet_withdraw,
@@ -275,40 +270,6 @@ enum WalletCommand {
     Balance {},
     Topup { token: String },
     Withdraw { amount: Option<u64> },
-}
-
-#[derive(Subcommand)]
-enum RoutstrCommand {
-    /// Show the current state of every Routstr profile and the local Cashu wallet.
-    Balance {},
-    /// Move sats from the local Cashu wallet into the active Routstr profile.
-    Topup {
-        /// Amount to send to the proxy. Defaults to 2000 sats.
-        amount: Option<u64>,
-    },
-    /// Refund the active profile's tracked balance back into the local Cashu wallet.
-    Refund {},
-    /// Manage Routstr profiles.
-    #[command(subcommand)]
-    Profile(RoutstrProfileCommand),
-}
-
-#[derive(Subcommand)]
-enum RoutstrProfileCommand {
-    /// Register a new Routstr profile under `name` pointing at `--url`.
-    Add {
-        name: String,
-        #[arg(long)]
-        url: String,
-    },
-    /// List all profiles, marking the active one and showing the per-profile balance.
-    List {},
-    /// Switch the active profile. Refunds the previous active profile's
-    /// balance back into the local wallet, then auto-tops the new profile
-    /// up to the default amount (2000 sats) from the local wallet.
-    Use { name: String },
-    /// Drop a profile. Refunds its tracked balance into the local wallet first.
-    Remove { name: String },
 }
 
 
@@ -761,13 +722,6 @@ enum Command {
         command: WalletCommand,
     },
 
-    /// Manage Routstr profiles (multiple URLs, per-profile sk-... api_keys, auto-refund on switch)
-    #[command(about = "Manage Routstr profiles and move sats between the local wallet and the proxy")]
-    Routstr {
-        #[command(subcommand)]
-        command: RoutstrCommand,
-    },
-
     /// Display goose configuration information
     #[command(about = "Display goose information")]
     Info {
@@ -1099,7 +1053,6 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Doctor {}) => "doctor",
         Some(Command::Info { .. }) => "info",
         Some(Command::Wallet { .. }) => "wallet",
-        Some(Command::Routstr { .. }) => "routstr",
         Some(Command::Mcp { .. }) => "mcp",
         Some(Command::Acp { .. }) => "acp",
         Some(Command::Serve { .. }) => "serve",
@@ -1840,17 +1793,6 @@ pub async fn cli() -> anyhow::Result<()> {
             WalletCommand::Balance {} => handle_wallet_balance().await,
             WalletCommand::Topup { token } => handle_wallet_topup(token).await,
             WalletCommand::Withdraw { amount } => handle_wallet_withdraw(amount).await,
-        },
-        Some(Command::Routstr { command }) => match command {
-            RoutstrCommand::Balance {} => handle_routstr_balance().await,
-            RoutstrCommand::Topup { amount } => handle_routstr_topup(amount).await,
-            RoutstrCommand::Refund {} => handle_routstr_refund().await,
-            RoutstrCommand::Profile(p) => match p {
-                RoutstrProfileCommand::Add { name, url } => handle_profile_add(name, url).await,
-                RoutstrProfileCommand::List {} => handle_profile_list().await,
-                RoutstrProfileCommand::Use { name } => handle_profile_use(name).await,
-                RoutstrProfileCommand::Remove { name } => handle_profile_remove(name).await,
-            },
         },
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
         Some(Command::Acp { builtins }) => goose::acp::server::run(builtins).await,
