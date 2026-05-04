@@ -198,14 +198,28 @@ pub async fn prompt_and_set_routstr_url() -> Result<()> {
 
     let new_name = "default".to_string();
     let mut profiles = load_profiles(config)?;
-    profiles.insert(new_name.clone(), RoutstrProfile::new(entered.clone()));
+    let new_profile = RoutstrProfile::new(entered.clone());
+    profiles.insert(new_name.clone(), new_profile.clone());
     goose::providers::routstr_api::save_profiles(config, &profiles)?;
     set_active_profile(config, &new_name)?;
     let _ = cliclack::log::info(format!(
-        "routstr profile {new_name:?} now points at {entered} and is active. \
-         Top up the local wallet with `goose wallet topup <cashu-token>` and \
-         re-run `goose configure → Routstr` against the same URL to fund this profile."
+        "routstr profile {new_name:?} now points at {entered} and is active."
     ));
+
+    // Auto-fund from the local wallet, just like a `goose routstr profile use`
+    // switch would. Without this, the configure flow's downstream
+    // `test_provider_configuration` step fires a chat against a brand-new
+    // empty profile and 401s with the "no api_key yet" error before the
+    // user has a chance to do anything. If the local wallet is empty the
+    // auto-topup is a soft-fail (warn + proceed), matching the same-URL
+    // branch above.
+    if let Err(e) = autotopup_after_switch(&new_name, &new_profile).await {
+        let _ = cliclack::log::warning(format!(
+            "auto-topup skipped: {e}. Top up the local wallet with \
+             `goose wallet topup <cashu-token>` and re-run \
+             `goose configure → Routstr` against the same URL to fund this profile."
+        ));
+    }
     Ok(())
 }
 
