@@ -339,6 +339,18 @@ impl Provider for RoutstrProvider {
         Ok(ids)
     }
 
+    /// Routstr is an aggregator — a single host fronts dozens of upstream
+    /// providers (OpenAI, Anthropic, Google, GLM, DeepSeek, Llama, …). The
+    /// shared canonical-model registry only lists "official" entries from
+    /// known providers, so applying it to a Routstr response would drop
+    /// every model that isn't already in the registry (e.g. all of
+    /// `routstr.otrta.me`'s gpt-5.5-* / claude-sonnet-4.6 / gemini-3.1-*
+    /// catalogue). Disable the filter and surface everything the proxy
+    /// returns; users can use the picker's search to narrow it down.
+    fn skip_canonical_filtering(&self) -> bool {
+        true
+    }
+
     async fn supports_cache_control(&self) -> bool {
         self.model
             .model_name
