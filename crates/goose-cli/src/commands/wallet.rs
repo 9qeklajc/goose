@@ -35,6 +35,9 @@ pub struct LocalWalletStatus {
 
 pub async fn handle_wallet_balance() -> Result<()> {
     let wallet = open_wallet().await?;
+    // Try to drain any queued failed-refunds first so the balance we
+    // print reflects all reachable sats.
+    let _ = crate::commands::routstr_pending::drain(&wallet, true).await;
     let balance: Amount = wallet.total_balance().await?;
     println!("local wallet: {} sats", u64::from(balance));
     println!("mint:         {}", DEFAULT_MINT_URL);
@@ -49,6 +52,11 @@ pub async fn handle_wallet_topup(token: String) -> Result<()> {
     }
 
     let wallet = open_wallet().await?;
+    // Drain any queued failed-refunds before receiving the new token —
+    // a topup is a natural moment to retry network-dependent refunds
+    // (the user is online if they're typing a token).
+    let _ = crate::commands::routstr_pending::drain(&wallet, true).await;
+
     let amount = wallet
         .receive(token, ReceiveOptions::default())
         .await
@@ -65,6 +73,9 @@ pub async fn handle_wallet_topup(token: String) -> Result<()> {
 
 pub async fn handle_wallet_withdraw(amount: Option<u64>) -> Result<()> {
     let wallet = open_wallet().await?;
+    // Drain queued refunds first so the user can withdraw whatever
+    // came back from previously-stranded api_keys in the same call.
+    let _ = crate::commands::routstr_pending::drain(&wallet, true).await;
     let balance: Amount = wallet.total_balance().await?;
 
     if balance == Amount::ZERO {

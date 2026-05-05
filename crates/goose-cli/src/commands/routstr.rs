@@ -18,6 +18,7 @@ use goose::providers::routstr_api::{
     ProviderApiError, RoutstrProfile, ROUTSTR_DEFAULT_HOST,
 };
 
+use crate::commands::routstr_pending;
 use crate::commands::wallet::{open_wallet, receive_into_wallet, withdraw_to_token};
 
 /// Default top-up amount in sats when the configure flow auto-funds the
@@ -69,11 +70,31 @@ pub async fn handle_profile_use(name: String) -> Result<()> {
                     eprintln!(
                         "{}",
                         style(format!(
-                            "⚠ refund of {current:?} failed: {e}. Switching anyway; \
-                             retry the URL change later to reclaim those sats."
+                            "⚠ refund of {current:?} failed: {e}. \
+                             Queued for retry — the next `goose wallet \
+                             topup/balance/withdraw` will try again."
                         ))
                         .yellow()
                     );
+                    if let Err(qe) =
+                        routstr_pending::enqueue(&active_profile.url, &active_profile.api_key, e.to_string())
+                    {
+                        eprintln!(
+                            "{}",
+                            style(format!(
+                                "  ⚠ couldn't queue pending refund ({qe}); the api_key is still \
+                                 in ROUTSTR_PROFILES.{current:?} for manual retry."
+                            ))
+                            .yellow()
+                        );
+                    }
+                    // Clear the api_key from the profile slot — the queue
+                    // is now the source of truth for it. If we left it in
+                    // the profile, the next switch back here would try to
+                    // refund a key we already enqueued.
+                    let mut updated = active_profile.clone();
+                    updated.api_key.clear();
+                    upsert_profile(config, &current, updated)?;
                 }
             }
         }
@@ -175,6 +196,9 @@ pub async fn prompt_and_set_routstr_url() -> Result<()> {
     }
 
     // 2. Otherwise create / update a `default` profile and switch.
+    //    The currently active profile's `default`-named slot is about to
+    //    be overwritten with the new URL below, so we MUST refund (or
+    //    enqueue for retry) its api_key before we lose track of it.
     if let Some(active_profile) = profiles.get(&active) {
         if !active_profile.api_key.is_empty() {
             match refund_active_into_wallet(&active, active_profile).await {
@@ -182,17 +206,39 @@ pub async fn prompt_and_set_routstr_url() -> Result<()> {
                     let _ = cliclack::log::info(format!(
                         "refunded {sats} sats from {active:?} into local wallet before changing URL"
                     ));
-                    let mut updated = active_profile.clone();
-                    updated.api_key.clear();
-                    upsert_profile(config, &active, updated)?;
                 }
                 Err(e) => {
                     let _ = cliclack::log::warning(format!(
-                        "refund of {active:?} failed: {e}. Continuing anyway; \
-                         re-select the previous URL later to reclaim those sats."
+                        "refund of {active:?} failed: {e}. Queued for retry — the \
+                         next `goose wallet topup/balance/withdraw` will try again."
                     ));
+                    if let Err(qe) = routstr_pending::enqueue(
+                        &active_profile.url,
+                        &active_profile.api_key,
+                        e.to_string(),
+                    ) {
+                        let _ = cliclack::log::warning(format!(
+                            "couldn't queue pending refund ({qe}); writing the api_key back into \
+                             ROUTSTR_PROFILES.{active:?} so it isn't lost when we overwrite the \
+                             default slot."
+                        ));
+                        // Best-effort fallback: keep the api_key on the
+                        // OLD profile slot under a different name so it's
+                        // still recoverable even if the queue file write
+                        // failed.
+                        let mut backup = active_profile.clone();
+                        backup.url = active_profile.url.clone();
+                        let backup_name = format!("{active}-pending-refund");
+                        let _ = upsert_profile(config, &backup_name, backup);
+                    }
                 }
             }
+            // Either way, clear the api_key from the active slot before
+            // we overwrite it below — the queue (or the backup profile)
+            // is now the source of truth for it.
+            let mut updated = active_profile.clone();
+            updated.api_key.clear();
+            upsert_profile(config, &active, updated)?;
         }
     }
 
