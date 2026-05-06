@@ -67,9 +67,6 @@ axum.workspace = true
 
 
 cdk = { version = "0.16", default-features = false, features = ["wallet"] }
-# cdk-sqlite (rusqlite -> libsqlite3-sys 0.28) conflicts with goose's sqlx 0.8.x
-# (libsqlite3-sys 0.30) at the cargo `links = "sqlite3"` rule. Use cdk-redb instead;
-# it stores the wallet in a redb file and avoids native sqlite linking entirely.
 cdk-redb = { version = "0.16", default-features = false, features = ["wallet"] }
 home = "0.5"
 bip39 = { version = "2.1", features = ["rand"] }
