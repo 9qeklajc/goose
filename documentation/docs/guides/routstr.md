@@ -12,15 +12,12 @@ bills per request in Bitcoin sats via [Cashu](https://cashu.space/) ecash
 tokens. goose ships:
 
 - A `routstr` provider that talks to any Routstr instance.
-- A local Cashu wallet (`goose wallet`) that holds your sats.
+- A local Cashu wallet (`goose wallet`) that holds your sats. Built on
+  [`cdk`](https://github.com/cashubtc/cdk), the Rust Cashu development kit.
 - A `goose configure → Configure Providers → Routstr` flow that wires
   everything together — picking a Routstr URL, exchanging some local sats
   for a per-host `sk-...` API key, and refunding the proxy back to your
   wallet when you switch hosts.
-
-Originally built by [thesimplekid](https://github.com/thesimplekid)
-(maintainer of [`cdk`](https://github.com/cashubtc/cdk), the Rust Cashu
-development kit goose uses under the hood).
 
 ## Two layers of state
 
