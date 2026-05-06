@@ -2,7 +2,9 @@ mod commands;
 mod services;
 mod types;
 
+use services::distro_bundle::DistroBundleState;
 use services::personas::PersonaStore;
+use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -30,6 +32,10 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_app_test_driver::init());
 
     builder
+        .setup(|app| {
+            app.manage(DistroBundleState::new(app.handle()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::agents::list_personas,
             commands::agents::create_persona,
@@ -43,6 +49,7 @@ pub fn run() {
             commands::agents::save_persona_avatar_bytes,
             commands::agents::get_avatars_dir,
             commands::acp::get_goose_serve_url,
+            commands::acp::get_goose_serve_host_info,
             commands::projects::list_projects,
             commands::projects::create_project,
             commands::projects::update_project,
@@ -71,6 +78,7 @@ pub fn run() {
             commands::agent_setup::install_agent,
             commands::agent_setup::authenticate_agent,
             commands::path_resolver::resolve_path,
+            commands::distro::get_distro_bundle,
             commands::system::get_home_dir,
             commands::system::save_exported_session_file,
             commands::system::path_exists,
@@ -79,7 +87,6 @@ pub fn run() {
             commands::system::list_files_for_mentions,
             commands::system::read_image_attachment,
         ])
-        .setup(|_app| Ok(()))
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {});
