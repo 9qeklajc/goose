@@ -41,7 +41,69 @@ pub async fn handle_wallet_balance() -> Result<()> {
     let balance: Amount = wallet.total_balance().await?;
     println!("local wallet: {} sats", u64::from(balance));
     println!("mint:         {}", DEFAULT_MINT_URL);
+
+    // Also show the active Routstr profile's balance so the user sees
+    // both layers (local sats + proxy-tracked sats) in one command.
+    print_active_profile_balance().await;
     Ok(())
+}
+
+/// Look up the active Routstr profile and, if it's funded, ask the proxy
+/// for its current balance via `GET /v1/balance/info`. Prints a one-line
+/// summary or a friendly hint if there's nothing to show.
+async fn print_active_profile_balance() {
+    use goose::config::Config;
+    use goose::providers::routstr_api::{active_profile_name, balance_info, load_profile};
+
+    let config = Config::global();
+    let active = active_profile_name(config);
+    let (name, profile) = match load_profile(config, Some(&active)) {
+        Ok(pair) => pair,
+        Err(_) => {
+            println!();
+            println!("active profile: (none — run `goose configure → Routstr` to add one)");
+            return;
+        }
+    };
+
+    println!();
+    println!("active profile: {name} ({})", profile.url);
+
+    if profile.api_key.trim().is_empty() {
+        println!(
+            "proxy balance:  (not funded yet — run `goose configure → Routstr → {}` to fund it from the local wallet)",
+            profile.url
+        );
+        return;
+    }
+
+    match balance_info(&profile.url, &profile.api_key).await {
+        Ok(info) => {
+            // Routstr reports balance in millisats. Divide by 1000 for sats.
+            let bal_sats = info.balance / 1000;
+            let bal_msats = info.balance;
+            let spent_sats = info.total_spent / 1000;
+            print!(
+                "proxy balance:  {} sats ({} mSats)",
+                bal_sats, bal_msats
+            );
+            if info.reserved > 0 {
+                print!(" — {} mSats reserved", info.reserved);
+            }
+            println!();
+            if info.total_requests > 0 {
+                println!(
+                    "spent:          {} sats over {} request{}",
+                    spent_sats,
+                    info.total_requests,
+                    if info.total_requests == 1 { "" } else { "s" }
+                );
+            }
+        }
+        Err(e) => {
+            println!("proxy balance:  (couldn't reach {} — {e})", profile.url);
+        }
+    }
 }
 
 pub async fn handle_wallet_topup(token: String) -> Result<()> {
